@@ -28,11 +28,8 @@ namespace http {
 template <class context, class responder, error_handler error_responder>
 class server {
 public:
-	using responder_ptr =
-		context_base<context>::template managed_ptr<responder>;
-
-	using error_handler_ptr =
-		context_base<context>::template managed_ptr<error_responder>;
+	using responder_ptr = managed_ptr<context, responder>;
+	using error_handler_ptr = managed_ptr<context, error_responder>;
 
 	using error_response = error_handler_base::error_response;
 	using error_response_ptr = error_handler_base::response_ptr;

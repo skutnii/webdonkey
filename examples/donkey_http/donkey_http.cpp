@@ -18,8 +18,11 @@
 using thread_pool = boost::asio::thread_pool;
 using io_context = boost::asio::io_context;
 
+template <class context, typename instance_type>
+using managed_ptr = webdonkey::managed_ptr<context, instance_type>;
+
 int main(int argc, char **argv) {
-	server_context::managed_ptr<logger> managed_logger;
+	managed_ptr<server_context, logger> managed_logger;
 	managed_logger->log("It works!");
 
 	// Check command line arguments.
@@ -30,7 +33,7 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 
-	server_context::shared_instance<thread_pool> shared_thread_pool{
+	webdonkey::shared_object<server_context, thread_pool> shared_thread_pool{
 		std::make_shared<thread_pool>(8)};
 
 	std::filesystem::path doc_root{argv[1]};
@@ -38,7 +41,7 @@ int main(int argc, char **argv) {
 	using responder =
 		webdonkey::http::static_responder<server_context,
 										  webdonkey::http::error_handler_base>;
-	server_context::shared_instance<responder> main_responder{
+	webdonkey::shared_object<server_context, responder> main_responder{
 		std::make_shared<responder>(doc_root)};
 
 	webdonkey::http_listener<server_context, responder,
@@ -50,7 +53,7 @@ int main(int argc, char **argv) {
 
 	http_server.bind(http_endpoint);
 
-	server_context::managed_ptr<thread_pool> pool;
+	managed_ptr<server_context, thread_pool> pool;
 	pool->join();
 
 	return 0;

@@ -25,8 +25,7 @@ public:
 	static std::string_view mime_type(const std::filesystem::path &file_path);
 
 private:
-	using error_handler_ptr =
-		context_base<context>::template managed_ptr<error_responder>;
+	using error_handler_ptr = managed_ptr<context, error_responder>;
 
 	error_handler_ptr _error_handler;
 };

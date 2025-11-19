@@ -16,7 +16,6 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/signals2.hpp>
-#include <memory>
 #include <variant>
 #include <webdonkey/contextual.hpp>
 
@@ -24,13 +23,10 @@ namespace webdonkey {
 
 template <class context, class handler, class executor> class tcp_listener {
 public:
-	using executor_ptr = std::shared_ptr<executor>;
 	using failure = std::variant<beast::error_code, std::exception *>;
 	using failure_signal = boost::signals2::signal<void(failure)>;
 
-	template <typename instance_type>
-	using managed_ptr =
-		context_base<context>::template managed_ptr<instance_type>;
+	using executor_ptr = managed_ptr<context, executor>;
 
 	void bind(const tcp::endpoint &endpoint) {
 		boost::asio::co_spawn(*_executor, listen(endpoint), asio::detached);
@@ -47,7 +43,7 @@ private:
 	asio::awaitable<void> listen(const tcp::endpoint &endpoint);
 	handler *as_handler() { return static_cast<handler *>(this); }
 
-	managed_ptr<executor> _executor;
+	executor_ptr _executor;
 	std::atomic<bool> _stopped = false;
 	failure_signal _on_failure;
 };

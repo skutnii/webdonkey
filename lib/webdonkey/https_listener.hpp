@@ -24,8 +24,7 @@ class https_listener
 		  executor>,
 	  public http::server<context, main_responder, error_responder> {
 public:
-	using ssl_context_ptr =
-		context_base<context>::template managed_ptr<ssl::context>;
+	using ssl_context_ptr = managed_ptr<context, ssl::context>;
 	using tcp_base = tcp_listener<
 		context,
 		https_listener<context, main_responder, error_responder, executor>,

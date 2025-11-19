@@ -12,22 +12,14 @@
 #include "webdonkey/http/error_handler.hpp"
 #include <webdonkey/contextual.hpp>
 
-class server_context : public webdonkey::context_base<server_context> {
+class server_context : public webdonkey::shared_registry<server_context> {
 public:
-	using base = webdonkey::context_base<server_context>;
+	template <class context, typename instance_type>
+	using shared_object = webdonkey::shared_object<context, instance_type>;
 
-	template <typename instance_type>
-	using shared_instance = base::shared_instance<instance_type>;
+	static shared_object<server_context, logger> shared_logger;
 
-	template <typename instance_type>
-	using instance_constructor = base::instance_constructor<instance_type>;
-
-	template <typename instance_type>
-	using managed_ptr = base::managed_ptr<instance_type>;
-
-	static shared_instance<logger> shared_logger;
-
-	static shared_instance<webdonkey::http::error_handler_base>
+	static shared_object<server_context, webdonkey::http::error_handler_base>
 		shared_error_handler;
 };
 
