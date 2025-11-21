@@ -83,7 +83,7 @@ public:
 
 	instance_type *operator->() const { return get(); }
 
-	operator bool() const { return (_local || _shared.lock()); }
+	operator bool() const { return (nullptr != get()); }
 
 private:
 	instance_type *get_local() const { return _local.get(); }
@@ -112,6 +112,9 @@ public:
 		_instance{instance} {
 		shared_registry<context>::shared().register_getter(getter());
 	}
+
+	instance_type &operator*() const { return *_instance; }
+	instance_type *operator->() const { return _instance.get(); }
 
 private:
 	std::shared_ptr<instance_type> _instance;

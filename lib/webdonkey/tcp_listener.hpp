@@ -16,73 +16,61 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/signals2.hpp>
-#include <variant>
 #include <webdonkey/contextual.hpp>
 
 namespace webdonkey {
 
-template <class context, class handler, class executor> class tcp_listener {
+template <class context, class executor> class tcp_listener {
 public:
-	using failure = std::variant<beast::error_code, std::exception *>;
-	using failure_signal = boost::signals2::signal<void(failure)>;
+	void stop() { _state->stopped = true; }
+	bool stopped() const { return _state->stopped; }
 
 	using executor_ptr = managed_ptr<context, executor>;
+	template <typename handler_type>
+	tcp_listener(const tcp::endpoint &endpoint, handler_type socket_handler) {
+		state_ptr shared_state = std::make_shared<state>();
 
-	void bind(const tcp::endpoint &endpoint) {
-		boost::asio::co_spawn(*_executor, listen(endpoint), asio::detached);
+		shared_state->acceptor.open(endpoint.protocol());
+		shared_state->acceptor.set_option(
+			asio::socket_base::reuse_address(true));
+		shared_state->acceptor.bind(endpoint);
+		shared_state->acceptor.listen(
+			asio::socket_base::max_listen_connections);
+
+		asio::co_spawn(*shared_state->exec,
+					   accept_connections(shared_state, socket_handler),
+					   asio::detached);
+
+		_state = shared_state;
 	}
 
-	failure_signal &on_failure() { return _on_failure; }
-
-	void fail(failure f) { _on_failure(f); }
-
-	void stop() { _stopped = true; }
-	bool stopped() const { return _stopped; }
+	~tcp_listener() { stop(); }
 
 private:
-	asio::awaitable<void> listen(const tcp::endpoint &endpoint);
-	handler *as_handler() { return static_cast<handler *>(this); }
+	struct state {
+		managed_ptr<context, executor> exec;
+		tcp::acceptor acceptor;
+		std::atomic<bool> stopped = false;
 
-	executor_ptr _executor;
-	std::atomic<bool> _stopped = false;
-	failure_signal _on_failure;
-};
+		state() :
+			acceptor{*exec} {}
+	};
 
-//==============================================================================
+	using state_ptr = std::shared_ptr<state>;
 
-template <class context, class handler, class executor>
-asio::awaitable<void> tcp_listener<context, handler, executor>::listen(
-	const tcp::endpoint &endpoint) {
-	beast::error_code ec;
-
-	// Open the acceptor
-	tcp::acceptor acceptor(*_executor);
-	acceptor.open(endpoint.protocol(), ec);
-	if (ec)
-		co_return fail(ec);
-
-	// Allow address reuse
-	acceptor.set_option(asio::socket_base::reuse_address(true), ec);
-	if (ec)
-		co_return fail(ec);
-
-	// Bind to the server address
-	acceptor.bind(endpoint, ec);
-	if (ec)
-		co_return fail(ec);
-
-	// Start listening for connections
-	acceptor.listen(asio::socket_base::max_listen_connections, ec);
-	if (ec)
-		co_return fail(ec);
-	while (!_stopped) {
-		tcp::socket socket = co_await acceptor.async_accept(
-			asio::make_strand(*_executor), asio::use_awaitable);
-		boost::asio::co_spawn(*_executor,
-							  as_handler()->handle(std::move(socket)),
-							  asio::detached);
+	template <typename handler_type>
+	static awaitable<void> accept_connections(state_ptr shared_state,
+											  handler_type handler) {
+		while (!shared_state->stopped) {
+			tcp::socket socket = co_await shared_state->acceptor.async_accept(
+				asio::make_strand(*shared_state->exec), asio::use_awaitable);
+			asio::co_spawn(*shared_state->exec, handler(socket),
+						   asio::detached);
+		}
 	}
-}
+
+	state_ptr _state;
+};
 
 } // namespace webdonkey
 

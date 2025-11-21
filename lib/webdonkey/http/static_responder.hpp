@@ -9,49 +9,59 @@
 #define LIB_WEBDONKEY_HTTP_STATIC_RESPONDER_HPP_
 
 #include <boost/asio/awaitable.hpp>
+#include <boost/beast/http/status.hpp>
+#include <expected>
 #include <filesystem>
+#include <string>
 #include <webdonkey/contextual.hpp>
-#include <webdonkey/http/common_responder.hpp>
-#include <webdonkey/http/error_handler.hpp>
+#include <webdonkey/http/http.hpp>
+#include <webdonkey/http/utils.hpp>
 
 namespace webdonkey {
 
 namespace http {
 
-template <class context, error_handler error_responder>
-class static_responder : public common_responder<context, error_responder> {
+class static_responder {
 public:
-	static_responder(std::filesystem::path root) :
-		_root{root} {}
+	static_responder(const std::filesystem::path &root,
+					 const std::string &index, const std::string &version) :
+		_root{root}, _index{index}, _version{version} {}
+
+	static_responder(const static_responder &) = default;
+	static_responder(static_responder &&) = default;
 
 	template <class socket_stream>
-	asio::awaitable<bool> respond(request_context<socket_stream> &r_context,
-								  std::string_view target);
+	expected_response operator()(request_context<socket_stream> &r_context,
+								 std::string_view target);
 
 private:
 	std::filesystem::path _root;
+	std::string _index;
+	std::string _version;
 };
 
-template <class context, error_handler error_responder>
 template <class socket_stream>
-asio::awaitable<bool> static_responder<context, error_responder>::respond(
-	request_context<socket_stream> &r_context, std::string_view target) {
-
+expected_response
+static_responder::operator()(request_context<socket_stream> &r_context,
+							 std::string_view target) {
 	// Request path must be absolute and not contain "..".
-	if (target.empty() || (target[0] != '/') ||
-		(target.find("..") != std::string_view::npos))
-		co_return co_await this->error(r_context, 400);
+	if (target.find("..") != std::string_view::npos)
+		return std::unexpected{
+			protocol_error{beast::http::status::bad_request, "Bad request"}};
 
-	std::filesystem::path file_path = _root / target.substr(1);
+	std::string_view resource =
+		(!target.empty() && target[0] == '/') ? target.substr(1) : target;
+	std::filesystem::path file_path = _root / resource;
 	if (!file_path.has_filename())
-		file_path /= "index.html";
+		file_path /= _index;
 
 	request &req = r_context.request();
 
 	// Make sure we can handle the method
 	if (req.method() != beast::http::verb::get &&
 		req.method() != beast::http::verb::head)
-		co_return co_await this->error(r_context, 400);
+		return std::unexpected{
+			protocol_error{beast::http::status::bad_request, "Bad request"}};
 
 	// Attempt to open the file
 	beast::error_code ec;
@@ -60,11 +70,13 @@ asio::awaitable<bool> static_responder<context, error_responder>::respond(
 
 	// Handle the case where the file doesn't exist
 	if (ec == beast::errc::no_such_file_or_directory)
-		co_return co_await this->error(r_context, 404);
+		return std::unexpected{
+			protocol_error{beast::http::status::not_found, "Not found"}};
 
 	// Handle an unknown error
 	if (ec)
-		co_return co_await this->error(r_context, 500);
+		return std::unexpected{
+			protocol_error{beast::http::status::bad_request, "Bad request"}};
 
 	// Cache the size since we need it after the move
 	const std::size_t size = body.size();
@@ -73,24 +85,22 @@ asio::awaitable<bool> static_responder<context, error_responder>::respond(
 	if (req.method() == beast::http::verb::head) {
 		beast::http::response<beast::http::empty_body> res{
 			beast::http::status::ok, req.version()};
-		res.set(beast::http::field::server, BOOST_BEAST_VERSION_STRING);
-		res.set(beast::http::field::content_type, this->mime_type(file_path));
+		res.set(beast::http::field::server, _version);
+		res.set(beast::http::field::content_type, mime_type(file_path));
 		res.content_length(size);
 		res.keep_alive(req.keep_alive());
-		co_await r_context.write(res);
+		return std::make_shared<response_generator>(std::move(res));
 	} else {
 		// Respond to GET request
 		beast::http::response<beast::http::file_body> res{
 			std::piecewise_construct, std::make_tuple(std::move(body)),
 			std::make_tuple(beast::http::status::ok, req.version())};
-		res.set(beast::http::field::server, BOOST_BEAST_VERSION_STRING);
-		res.set(beast::http::field::content_type, this->mime_type(file_path));
+		res.set(beast::http::field::server, _version);
+		res.set(beast::http::field::content_type, mime_type(file_path));
 		res.content_length(size);
 		res.keep_alive(req.keep_alive());
-		co_await r_context.write(res);
+		return std::make_shared<response_generator>(std::move(res));
 	}
-
-	co_return true;
 }
 
 } // namespace http
