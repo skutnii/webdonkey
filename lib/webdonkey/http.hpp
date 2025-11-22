@@ -91,7 +91,14 @@ awaitable<void> serve(socket_stream &stream, responder_type respond) {
 				std::forward<decltype(stream)>(stream)};
 			co_await ctx.read_header();
 			response_ptr response = co_await respond(ctx);
-			co_await ctx.write(*response);
+
+			/*
+			 * Implementations may choose to write responses to the stream
+			 * directly instead of returning them.
+			 */
+			if (response)
+				co_await ctx.write(*response);
+
 			if (!ctx.keep_alive())
 				break;
 		} catch (boost::system::system_error &err) {
