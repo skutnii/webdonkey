@@ -19,8 +19,8 @@
 #include <iostream>
 #include <sstream>
 #include <webdonkey/contextual.hpp>
-#include <webdonkey/http/http.hpp>
-#include <webdonkey/http/static_responder.hpp>
+#include <webdonkey/http.hpp>
+#include <webdonkey/static_responder.hpp>
 
 struct server_context {};
 
@@ -119,7 +119,6 @@ void load_server_certificate(boost::asio::ssl::context &ctx) {
 int main(int argc, char **argv) {
 
 	using namespace webdonkey;
-	using namespace http;
 
 	// Check command line arguments.
 	if (argc != 2) {
@@ -169,7 +168,7 @@ int main(int argc, char **argv) {
 	tcp_listener<server_context, thread_pool> https_listener{
 		https_endpoint, [&](tcp::socket &socket) -> awaitable<void> {
 			try {
-				co_await http::https(socket, ssl_ctx, secure_server);
+				co_await https(socket, ssl_ctx, secure_server);
 			} catch (std::exception &err) {
 				std::cerr << std::string{err.what()} + "\n";
 			} catch (...) {
@@ -205,7 +204,7 @@ int main(int argc, char **argv) {
 	tcp_listener<server_context, thread_pool> http_listener{
 		http_endpoint, [&](tcp::socket &socket) -> awaitable<void> {
 			try {
-				co_await http::http(socket, redirect_server);
+				co_await http(socket, redirect_server);
 			} catch (std::exception &err) {
 				std::cerr << std::string{err.what()} + "\n";
 			} catch (...) {

@@ -16,8 +16,8 @@
 #include <exception>
 #include <iostream>
 #include <webdonkey/contextual.hpp>
-#include <webdonkey/http/http.hpp>
-#include <webdonkey/http/static_responder.hpp>
+#include <webdonkey/http.hpp>
+#include <webdonkey/static_responder.hpp>
 
 struct server_context {};
 
@@ -26,7 +26,6 @@ using thread_pool = boost::asio::thread_pool;
 int main(int argc, char **argv) {
 
 	using namespace webdonkey;
-	using namespace http;
 
 	// Check command line arguments.
 	if (argc != 2) {
@@ -69,7 +68,7 @@ int main(int argc, char **argv) {
 	tcp_listener<server_context, thread_pool> http_listener{
 		http_endpoint, [&](tcp::socket &socket) -> awaitable<void> {
 			try {
-				co_await http::http(socket, simple_server);
+				co_await http(socket, simple_server);
 			} catch (std::exception &err) {
 				std::cerr << std::string{err.what()} + "\n";
 			} catch (...) {

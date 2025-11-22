@@ -14,12 +14,10 @@
 #include <filesystem>
 #include <string>
 #include <webdonkey/contextual.hpp>
-#include <webdonkey/http/http.hpp>
-#include <webdonkey/http/utils.hpp>
+#include <webdonkey/http.hpp>
+#include <webdonkey/utils.hpp>
 
 namespace webdonkey {
-
-namespace http {
 
 class static_responder {
 public:
@@ -60,8 +58,9 @@ static_responder::operator()(request_context<socket_stream> &r_context,
 	// Make sure we can handle the method
 	if (req.method() != beast::http::verb::get &&
 		req.method() != beast::http::verb::head)
-		return std::unexpected{
-			protocol_error{beast::http::status::bad_request, "Bad request"}};
+		return std::unexpected{protocol_error{
+			beast::http::status::method_not_allowed,
+			r_context.method_string() + " " + std::string{r_context.target()}}};
 
 	// Attempt to open the file
 	beast::error_code ec;
@@ -70,13 +69,13 @@ static_responder::operator()(request_context<socket_stream> &r_context,
 
 	// Handle the case where the file doesn't exist
 	if (ec == beast::errc::no_such_file_or_directory)
-		return std::unexpected{
-			protocol_error{beast::http::status::not_found, "Not found"}};
+		return std::unexpected{protocol_error{beast::http::status::not_found,
+											  std::string{target}}};
 
 	// Handle an unknown error
 	if (ec)
 		return std::unexpected{
-			protocol_error{beast::http::status::bad_request, "Bad request"}};
+			protocol_error{beast::http::status::bad_request, "Unknown error"}};
 
 	// Cache the size since we need it after the move
 	const std::size_t size = body.size();
@@ -102,8 +101,6 @@ static_responder::operator()(request_context<socket_stream> &r_context,
 		return std::make_shared<response_generator>(std::move(res));
 	}
 }
-
-} // namespace http
 
 } // namespace webdonkey
 

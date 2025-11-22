@@ -12,11 +12,9 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <expected>
 #include <regex>
-#include <webdonkey/http/utils.hpp>
+#include <webdonkey/utils.hpp>
 
 namespace webdonkey {
-
-namespace http {
 
 using response_generator = beast::http::message_generator;
 using request_buffer = beast::multi_buffer;
@@ -67,9 +65,9 @@ public:
 		return _parser.get().keep_alive();
 	}
 
-	const http::request &request() const { return _parser.get(); }
+	const webdonkey::request &request() const { return _parser.get(); }
 
-	http::request &request() { return _parser.get(); }
+	webdonkey::request &request() { return _parser.get(); }
 
 	std::string_view target() const { return _parser.get().base().target(); }
 
@@ -178,8 +176,6 @@ operator|(first_responder first, next_responder next) {
 		return std::unexpected{first_response.error()};
 	};
 }
-
-} // namespace http
 
 } // namespace webdonkey
 

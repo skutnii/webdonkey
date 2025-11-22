@@ -15,8 +15,6 @@
 
 namespace webdonkey {
 
-namespace http {
-
 static std::string mime_type(const std::filesystem::path &file_path) {
 	using beast::iequals;
 	std::filesystem::path ext = file_path.extension();
@@ -75,8 +73,6 @@ static std::string_view prefix_matching(std::string_view path,
 
 	return path.substr(0, matches[0].length());
 }
-
-} // namespace http
 
 } // namespace webdonkey
 
