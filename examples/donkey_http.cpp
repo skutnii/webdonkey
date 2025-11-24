@@ -52,7 +52,10 @@ public:
 			}
 
 			request_context_ptr ctx = request_or->value();
-			ctx->response = response_for(*ctx);
+			response_ptr response = response_for(*ctx);
+			auto status = co_await ctx->co_write(*response);
+			if (!status.has_value())
+				std::cerr << status.error().message() + "\n";
 		}
 	}
 
@@ -88,10 +91,10 @@ int main(int argc, char **argv) {
 	using namespace webdonkey;
 
 	// Check command line arguments.
-	if (argc != 2) {
-		std::cerr << "Usage: donkey_http <doc_root>" << std::endl
+	if (argc != 3) {
+		std::cerr << "Usage: donkey_http <doc_root> <port>" << std::endl
 				  << "Example:" << std::endl
-				  << "    donkey_http /path/to/htdocs" << std::endl;
+				  << "    donkey_http /path/to/htdocs 80" << std::endl;
 		return EXIT_FAILURE;
 	}
 

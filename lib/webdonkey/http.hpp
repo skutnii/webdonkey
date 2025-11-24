@@ -172,27 +172,18 @@ next_request(std::shared_ptr<socket_stream> stream) {
 		request_context_ptr<socket_stream> ctx =
 			std::make_shared<context>(*stream);
 		typename context::io_result status = co_await ctx->co_read_header();
-		if (!status.has_value())
-			goto on_error;
+		if (!status.has_value()) {
+			if ((status.error() != beast::http::error::end_of_stream) &&
+				(status.error() != beast::http::error::partial_message))
+				co_yield std::unexpected{status.error()};
+
+			break;
+		}
 
 		co_yield ctx;
 
-		if (ctx->response) {
-			status = co_await ctx->co_write(*ctx->response);
-			if (!status.has_value())
-				goto on_error;
-		}
-
 		if (!ctx->keep_alive())
 			break;
-
-		continue;
-	on_error:
-		if ((status.error() != beast::http::error::end_of_stream) &&
-			(status.error() != beast::http::error::partial_message))
-			co_yield std::unexpected{status.error()};
-
-		break;
 	}
 }
 
