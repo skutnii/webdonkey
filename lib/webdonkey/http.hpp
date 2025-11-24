@@ -8,10 +8,15 @@
 #ifndef LIB_WEBDONKEY_HTTP_HPP_
 #define LIB_WEBDONKEY_HTTP_HPP_
 
+#include "webdonkey/continuation.hpp"
+#include "webdonkey/defs.hpp"
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/system/detail/error_code.hpp>
+#include <coroutine>
 #include <expected>
 #include <regex>
+#include <webdonkey/coroutines.hpp>
 #include <webdonkey/utils.hpp>
 
 namespace webdonkey {
@@ -42,7 +47,27 @@ public:
 
 	socket_stream &stream() { return _stream; }
 
-	asio::awaitable<std::size_t> read_header() {
+	using io_result = std::expected<size_t, boost::system::error_code>;
+
+	coroutine::continuation<io_result, coroutine::value_storage::copy>
+	co_read_header() {
+		using continuation =
+			coroutine::continuation<io_result, coroutine::value_storage::copy>;
+		continuation then;
+		beast::http::async_read_header(
+			_stream, _buffer, _parser,
+			[then](
+				boost::system::error_code const &error, // result of operation
+				std::size_t bytes_transferred) {
+				if (error)
+					const_cast<continuation &>(then)(std::unexpected{error});
+				else
+					const_cast<continuation &>(then)(bytes_transferred);
+			});
+		return then;
+	}
+
+	awaitable<std::size_t> read_header() {
 		return beast::http::async_read_header(_stream, _buffer, _parser,
 											  asio::use_awaitable);
 	}
@@ -54,6 +79,24 @@ public:
 
 	awaitable<std::size_t> write(response_generator &gen) {
 		return beast::async_write(_stream, std::move(gen), asio::use_awaitable);
+	}
+
+	coroutine::continuation<io_result, coroutine::value_storage::copy>
+	co_write(response_generator &gen) {
+		using continuation =
+			coroutine::continuation<io_result, coroutine::value_storage::copy>;
+		continuation then;
+		beast::async_write(
+			_stream, std::move(gen),
+			[then](
+				boost::system::error_code const &error, // result of operation
+				std::size_t bytes_transferred) {
+				if (error)
+					const_cast<continuation &>(then)(std::unexpected{error});
+				else
+					const_cast<continuation &>(then)(bytes_transferred);
+			});
+		return then;
 	}
 
 	void force_keep_alive(bool flag) { _force_keep_alive = flag; }
@@ -74,6 +117,8 @@ public:
 	std::string method_string() const {
 		return beast::http::to_string(request().method());
 	}
+
+	response_ptr response;
 
 private:
 	std::optional<bool> _force_keep_alive;
@@ -109,6 +154,70 @@ awaitable<void> serve(socket_stream &stream, responder_type respond) {
 				throw;
 		}
 	}
+}
+
+template <class socket_stream>
+using request_context_ptr = std::shared_ptr<request_context<socket_stream>>;
+
+template <class socket_stream>
+using expected_request = std::expected<request_context_ptr<socket_stream>,
+									   boost::system::error_code>;
+
+template <class socket_stream>
+coroutine::yielding<expected_request<socket_stream>, std::suspend_always,
+					coroutine::value_storage::copy>
+next_request(std::shared_ptr<socket_stream> stream) {
+	for (;;) {
+		using context = request_context<socket_stream>;
+		request_context_ptr<socket_stream> ctx =
+			std::make_shared<context>(*stream);
+		typename context::io_result status = co_await ctx->co_read_header();
+		if (!status.has_value())
+			goto on_error;
+
+		co_yield ctx;
+
+		if (ctx->response) {
+			status = co_await ctx->co_write(*ctx->response);
+			if (!status.has_value())
+				goto on_error;
+		}
+
+		if (!ctx->keep_alive())
+			break;
+
+		continue;
+	on_error:
+		if ((status.error() != beast::http::error::end_of_stream) &&
+			(status.error() != beast::http::error::partial_message))
+			co_yield std::unexpected{status.error()};
+
+		break;
+	}
+}
+
+inline static coroutine::yielding<expected_request<tcp_stream>,
+								  std::suspend_always,
+								  coroutine::value_storage::copy>
+http_request(tcp::socket &socket) {
+	return next_request(std::make_shared<tcp_stream>(std::move(socket)));
+}
+
+inline static coroutine::yielding<expected_request<ssl_stream>,
+								  std::suspend_always,
+								  coroutine::value_storage::copy>
+https_request(tcp::socket &socket, ssl::context &ssl_ctx) {
+	std::shared_ptr<ssl_stream> stream =
+		std::make_shared<ssl_stream>(std::move(socket), ssl_ctx);
+	stream->handshake(ssl::stream_base::server);
+	coroutine::yielding<expected_request<ssl_stream>, std::suspend_always,
+						coroutine::value_storage::copy>
+		next = next_request(stream);
+
+	while (auto request = co_await next)
+		co_yield request;
+
+	stream->shutdown();
 }
 
 template <typename server_type>
