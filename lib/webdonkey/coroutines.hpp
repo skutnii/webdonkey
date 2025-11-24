@@ -63,13 +63,13 @@ public:
 		} // saving
 		  // exception
 
-		std::suspend_always yield_value(result_type &&from) {
+		std::suspend_always yield_value(yield_type &&from) {
 			std::lock_guard<std::recursive_mutex> state_lock{_mutex};
-			_yield(std::forward<result_type>(from));
+			_yield(std::forward<yield_type>(from));
 			return {};
 		}
 
-		std::suspend_always yield_value(const result_type &from) {
+		std::suspend_always yield_value(const yield_type &from) {
 			std::lock_guard<std::recursive_mutex> state_lock{_mutex};
 			_yield(std::move(from));
 			return {};
@@ -265,7 +265,7 @@ public:
 			return {};
 		}
 
-		std::suspend_always yield_value(const yield_result_type &from) {
+		std::suspend_always yield_value(const yield_type &from) {
 			std::lock_guard<std::recursive_mutex> state_lock{_mutex};
 			if (_expects_return)
 				_return(std::make_exception_ptr(unhandled_yield{}));
@@ -274,12 +274,12 @@ public:
 			return {};
 		}
 
-		void return_value(return_type &&from) {
+		void return_value(yield_type &&from) {
 			std::lock_guard<std::recursive_mutex> state_lock{_mutex};
 			if (_expects_yield)
 				_yield(std::optional<yield_type>{});
 
-			_return(std::forward<return_type>(from));
+			_return(std::forward<yield_type>(from));
 		}
 
 		void return_value(const return_type &from) {

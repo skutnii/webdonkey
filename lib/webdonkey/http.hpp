@@ -214,8 +214,8 @@ https_request(tcp::socket &socket, ssl::context &ssl_ctx) {
 						coroutine::value_storage::copy>
 		next = next_request(stream);
 
-	while (auto request = co_await next)
-		co_yield request;
+	while (auto maybe_request = co_await next)
+		co_yield maybe_request.value();
 
 	stream->shutdown();
 }
