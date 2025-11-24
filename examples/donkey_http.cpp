@@ -15,6 +15,8 @@
 #include <boost/beast/http/field.hpp>
 #include <boost/beast/http/message_fwd.hpp>
 #include <boost/beast/http/string_body_fwd.hpp>
+#include <boost/cobalt.hpp>
+#include <boost/cobalt/spawn.hpp>
 #include <boost/system/detail/error_code.hpp>
 #include <coroutine>
 #include <iostream>
@@ -39,14 +41,14 @@ public:
 	webdonkey::response_ptr
 	response_for(webdonkey::request_context<webdonkey::tcp_stream> &ctx);
 
-	coroutine::returning<void, std::suspend_never>
-	serve(webdonkey::tcp::socket &socket) {
+	boost::cobalt::task<void> serve(webdonkey::tcp::socket &socket) {
 		using namespace webdonkey;
+		auto next_req = http_request(socket);
 		while (std::optional<expected_request<tcp_stream>> request_or =
-				   co_await http_request(socket)) {
+				   co_await next_req) {
 			if (!request_or->has_value()) {
 				std::cerr << request_or->error().message() + "\n";
-				break;
+				continue;
 			}
 
 			request_context_ptr ctx = request_or->value();
@@ -104,23 +106,24 @@ int main(int argc, char **argv) {
 
 	tcp_listener<server_context, thread_pool> http_listener{http_endpoint};
 
-	asio::post(
-		*shared_pool, [&]() -> coroutine::returning<void, std::suspend_never> {
+	boost::cobalt::spawn(
+		*shared_pool,
+		[&]() -> boost::cobalt::task<void> {
 			auto accept = http_listener.accept();
 			while (auto result = co_await accept) {
 				if (!result->has_value()) {
-					std::cerr << result->error().message() + "\n";
-					break;
+					std::cerr
+						<< "Socket error: " + result->error().message() + "\n";
+					co_return;
 				}
 
-				asio::post(
-					*shared_pool,
-					[&, socket = result->value()]()
-						-> coroutine::returning<void, std::suspend_never> {
-						return server.serve(const_cast<tcp::socket &>(*socket));
-					});
+				boost::cobalt::spawn(*shared_pool,
+									 server.serve(*result->value()),
+									 asio::detached);
+				result->value().reset();
 			}
-		});
+		}(),
+		asio::detached);
 
 	shared_pool->join();
 

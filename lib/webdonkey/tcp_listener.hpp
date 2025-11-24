@@ -25,7 +25,6 @@ namespace webdonkey {
 
 template <class context, class executor> class tcp_listener {
 public:
-	using socket_ptr = std::shared_ptr<tcp::socket>;
 	using accept_result = std::expected<socket_ptr, boost::system::error_code>;
 	using socket_acceptor =
 		coroutine::yielding<accept_result, std::suspend_always,
@@ -110,9 +109,7 @@ private:
 		}
 	}
 
-	static coroutine::yielding<accept_result, std::suspend_always,
-							   coroutine::value_storage::copy>
-	accept_connections(state_ptr shared_state) {
+	static socket_acceptor accept_connections(state_ptr shared_state) {
 		while (!shared_state->stopped)
 			co_yield co_await shared_state->accept();
 	}

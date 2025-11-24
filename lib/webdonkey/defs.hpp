@@ -32,6 +32,7 @@ using tcp_stream = beast::tcp_stream;
 using ssl_stream = beast::ssl_stream<tcp_stream>;
 
 template <typename value_type> using awaitable = asio::awaitable<value_type>;
+using socket_ptr = std::shared_ptr<tcp::socket>;
 
 } // namespace webdonkey
 
