@@ -12,6 +12,7 @@
 #include "webdonkey/defs.hpp"
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/beast/http/message_fwd.hpp>
 #include <boost/system/detail/error_code.hpp>
 #include <coroutine>
 #include <expected>
@@ -88,6 +89,25 @@ public:
 		continuation then;
 		beast::async_write(
 			_stream, std::move(gen),
+			[then](
+				boost::system::error_code const &error, // result of operation
+				std::size_t bytes_transferred) {
+				if (error)
+					const_cast<continuation &>(then)(std::unexpected{error});
+				else
+					const_cast<continuation &>(then)(bytes_transferred);
+			});
+		return then;
+	}
+
+	template <class body>
+	coroutine::continuation<io_result, coroutine::value_storage::copy>
+	co_write(beast::http::response<body> &res) {
+		using continuation =
+			coroutine::continuation<io_result, coroutine::value_storage::copy>;
+		continuation then;
+		beast::http::async_write(
+			_stream, res,
 			[then](
 				boost::system::error_code const &error, // result of operation
 				std::size_t bytes_transferred) {
@@ -201,14 +221,14 @@ https_request(tcp::socket &socket, ssl::context &ssl_ctx) {
 	std::shared_ptr<ssl_stream> stream =
 		std::make_shared<ssl_stream>(std::move(socket), ssl_ctx);
 	stream->handshake(ssl::stream_base::server);
+	defer shutdown{[stream]() { stream->shutdown(); }};
+
 	coroutine::yielding<expected_request<ssl_stream>, std::suspend_always,
 						coroutine::value_storage::copy>
 		next = next_request(stream);
 
 	while (auto maybe_request = co_await next)
 		co_yield maybe_request.value();
-
-	stream->shutdown();
 }
 
 template <typename server_type>

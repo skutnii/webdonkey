@@ -15,6 +15,8 @@
 #include <boost/beast/http/message_fwd.hpp>
 #include <boost/beast/http/status.hpp>
 #include <boost/beast/http/string_body_fwd.hpp>
+#include <boost/cobalt.hpp>
+#include <boost/cobalt/spawn.hpp>
 #include <exception>
 #include <iostream>
 #include <sstream>
@@ -139,78 +141,117 @@ int main(int argc, char **argv) {
 
 	static_responder serve_static{doc_root, "index.html", version};
 
-	auto secure_server =
-		[&](request_context<ssl_stream> &ctx) -> awaitable<response_ptr> {
-		std::cout << "Serving " + ctx.method_string() + " " + ctx.target() +
-						 "\n";
-		expected_response response_or = serve_static(ctx, ctx.target());
-		if (response_or.has_value())
-			co_return response_or.value();
+	auto serve_content = [&](socket_ptr socket) -> boost::cobalt::task<void> {
+		auto next_req = https_request(*socket, ssl_ctx);
+		while (std::optional<expected_request<ssl_stream>> request_or =
+				   co_await next_req) {
+			if (!request_or->has_value()) {
+				std::cerr << request_or->error().message() + "\n";
+				continue;
+			}
 
-		std::stringstream err_stream;
-		err_stream << "[HTTP " << static_cast<int>(response_or.error().status)
-				   << "] " << response_or.error().message << std::endl;
-		std::cerr << err_stream.str();
+			request_context_ptr ctx = request_or->value();
+			std::cout << "Serving " + ctx->method_string() + " " +
+							 ctx->target() + "\n";
+			expected_response response_or = serve_static(*ctx, ctx->target());
+			response_ptr response{nullptr};
+			if (response_or.has_value())
+				response = response_or.value();
+			else {
+				std::cerr << "[HTTP error] " + response_or.error().message +
+								 "\n";
+				beast::http::response<beast::http::string_body> res{
+					response_or.error().status, ctx->request().version()};
+				res.set(boost::beast::http::field::server, version);
+				res.set(boost::beast::http::field::content_type, "text/html");
+				res.keep_alive(ctx->request().keep_alive());
+				res.body() = response_or.error().message;
+				res.prepare_payload();
+				response = std::make_shared<response_generator>(std::move(res));
+			}
 
-		beast::http::response<beast::http::string_body> res{
-			response_or.error().status, ctx.request().version()};
-		res.set(boost::beast::http::field::server, version);
-		res.set(boost::beast::http::field::content_type, "text/html");
-		res.keep_alive(ctx.request().keep_alive());
-		res.body() = response_or.error().message;
-		res.prepare_payload();
-		co_return std::make_shared<response_generator>(std::move(res));
+			auto status = co_await ctx->co_write(*response);
+			if (!status.has_value())
+				std::cerr << status.error().message() + "\n";
+		}
 	};
 
 	auto const address = boost::asio::ip::make_address("0.0.0.0");
 	boost::asio::ip::tcp::endpoint https_endpoint{address, 443};
 
-	tcp_listener<server_context, thread_pool> https_listener{
-		https_endpoint, [&](tcp::socket &socket) -> awaitable<void> {
-			try {
-				co_await https(socket, ssl_ctx, secure_server);
-			} catch (std::exception &err) {
-				std::cerr << std::string{err.what()} + "\n";
-			} catch (...) {
-				std::cerr << "Unknown error occurred.\n";
+	tcp_listener<server_context, thread_pool> https_listener{https_endpoint};
+
+	boost::cobalt::spawn(
+		*shared_pool,
+		[&]() -> boost::cobalt::task<void> {
+			auto accept = https_listener.accept();
+			while (auto result = co_await accept) {
+				if (!result->has_value()) {
+					std::cerr
+						<< "Socket error: " + result->error().message() + "\n";
+					co_return;
+				}
+
+				boost::cobalt::spawn(*shared_pool,
+									 serve_content(result->value()),
+									 asio::detached);
 			}
-		}};
+		}(),
+		asio::detached);
 
-	auto redirect_server =
-		[&](request_context<tcp_stream> &ctx) -> awaitable<response_ptr> {
-		beast::http::response<beast::http::empty_body> res{
-			beast::http::status::moved_permanently, ctx.request().version()};
-		res.set(boost::beast::http::field::server, version);
-		res.set(boost::beast::http::field::content_type, "text/html");
+	auto redirect = [&](socket_ptr socket) -> boost::cobalt::task<void> {
+		auto next_req = http_request(*socket);
+		while (std::optional<expected_request<tcp_stream>> request_or =
+				   co_await next_req) {
+			if (!request_or->has_value()) {
+				std::cerr << request_or->error().message() + "\n";
+				continue;
+			}
 
-		std::stringstream url_builder;
-		url_builder << "https://" << ctx.request()[beast::http::field::host]
-					<< ctx.target();
-		std::string redirect_url = url_builder.str();
+			request_context_ptr ctx = request_or->value();
+			beast::http::response<beast::http::empty_body> res{
+				beast::http::status::moved_permanently,
+				ctx->request().version()};
+			res.set(boost::beast::http::field::server, version);
+			res.set(boost::beast::http::field::content_type, "text/html");
 
-		std::stringstream log_stream;
-		log_stream << "Redirect " << ctx.method_string() << " " << ctx.target()
-				   << " to " << redirect_url << std::endl;
-		std::cout << log_stream.str();
+			std::stringstream url_builder;
+			url_builder << "https://"
+						<< ctx->request()[beast::http::field::host]
+						<< ctx->target();
+			std::string redirect_url = url_builder.str();
 
-		res.set(beast::http::field::location, redirect_url);
-		res.keep_alive(true);
-		res.prepare_payload();
-		co_return std::make_shared<response_generator>(std::move(res));
+			std::stringstream log_stream;
+			log_stream << "Redirect " << ctx->method_string() << " "
+					   << ctx->target() << " to " << redirect_url << std::endl;
+			std::cout << log_stream.str();
+
+			res.set(beast::http::field::location, redirect_url);
+			res.keep_alive(true);
+			res.prepare_payload();
+			auto result = co_await ctx->co_write(res);
+		}
 	};
 
 	boost::asio::ip::tcp::endpoint http_endpoint{address, 80};
+	tcp_listener<server_context, thread_pool> http_listener{http_endpoint};
 
-	tcp_listener<server_context, thread_pool> http_listener{
-		http_endpoint, [&](tcp::socket &socket) -> awaitable<void> {
-			try {
-				co_await http(socket, redirect_server);
-			} catch (std::exception &err) {
-				std::cerr << std::string{err.what()} + "\n";
-			} catch (...) {
-				std::cerr << "Unknown error occurred.\n";
+	boost::cobalt::spawn(
+		*shared_pool,
+		[&]() -> boost::cobalt::task<void> {
+			auto accept = http_listener.accept();
+			while (auto result = co_await accept) {
+				if (!result->has_value()) {
+					std::cerr
+						<< "Socket error: " + result->error().message() + "\n";
+					co_return;
+				}
+
+				boost::cobalt::spawn(*shared_pool, redirect(result->value()),
+									 asio::detached);
 			}
-		}};
+		}(),
+		asio::detached);
 
 	shared_pool->join();
 

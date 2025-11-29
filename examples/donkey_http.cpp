@@ -31,59 +31,7 @@ struct server_context {};
 using thread_pool = boost::asio::thread_pool;
 namespace coroutine = webdonkey::coroutine;
 
-class simple_server {
-public:
-	static std::string version() { return "webdonkey HTTP example"; }
-
-	simple_server(std::filesystem::path doc_root) :
-		_respond{doc_root, "index.html", version()} {}
-
-	webdonkey::response_ptr
-	response_for(webdonkey::request_context<webdonkey::tcp_stream> &ctx);
-
-	boost::cobalt::task<void> serve(webdonkey::tcp::socket &socket) {
-		using namespace webdonkey;
-		auto next_req = http_request(socket);
-		while (std::optional<expected_request<tcp_stream>> request_or =
-				   co_await next_req) {
-			if (!request_or->has_value()) {
-				std::cerr << request_or->error().message() + "\n";
-				continue;
-			}
-
-			request_context_ptr ctx = request_or->value();
-			response_ptr response = response_for(*ctx);
-			auto status = co_await ctx->co_write(*response);
-			if (!status.has_value())
-				std::cerr << status.error().message() + "\n";
-		}
-	}
-
-private:
-	webdonkey::static_responder _respond;
-};
-
-//==============================================================================
-
-webdonkey::response_ptr simple_server::response_for(
-	webdonkey::request_context<webdonkey::tcp_stream> &ctx) {
-	using namespace webdonkey;
-
-	std::cout << "Serving " + ctx.method_string() + " " + ctx.target() + "\n";
-	expected_response response_or = _respond(ctx, ctx.target());
-	if (response_or.has_value())
-		return response_or.value();
-
-	std::cerr << "[HTTP error] " + response_or.error().message + "\n";
-	beast::http::response<beast::http::string_body> res{
-		response_or.error().status, ctx.request().version()};
-	res.set(boost::beast::http::field::server, version());
-	res.set(boost::beast::http::field::content_type, "text/html");
-	res.keep_alive(ctx.request().keep_alive());
-	res.body() = response_or.error().message;
-	res.prepare_payload();
-	return std::make_shared<response_generator>(std::move(res));
-}
+static const std::string version{"webdonkey HTTP example"};
 
 //==============================================================================
 
@@ -102,7 +50,42 @@ int main(int argc, char **argv) {
 		std::make_shared<thread_pool>(8)};
 
 	std::filesystem::path doc_root{argv[1]};
-	simple_server server{doc_root};
+	static_responder serve_static{doc_root, "index.html", version};
+
+	auto serve_content = [&](socket_ptr socket) -> boost::cobalt::task<void> {
+		auto next_req = http_request(*socket);
+		while (std::optional<expected_request<tcp_stream>> request_or =
+				   co_await next_req) {
+			if (!request_or->has_value()) {
+				std::cerr << request_or->error().message() + "\n";
+				continue;
+			}
+
+			request_context_ptr ctx = request_or->value();
+			std::cout << "Serving " + ctx->method_string() + " " +
+							 ctx->target() + "\n";
+			expected_response response_or = serve_static(*ctx, ctx->target());
+			response_ptr response{nullptr};
+			if (response_or.has_value())
+				response = response_or.value();
+			else {
+				std::cerr << "[HTTP error] " + response_or.error().message +
+								 "\n";
+				beast::http::response<beast::http::string_body> res{
+					response_or.error().status, ctx->request().version()};
+				res.set(boost::beast::http::field::server, version);
+				res.set(boost::beast::http::field::content_type, "text/html");
+				res.keep_alive(ctx->request().keep_alive());
+				res.body() = response_or.error().message;
+				res.prepare_payload();
+				response = std::make_shared<response_generator>(std::move(res));
+			}
+
+			auto status = co_await ctx->co_write(*response);
+			if (!status.has_value())
+				std::cerr << status.error().message() + "\n";
+		}
+	};
 
 	auto const address = boost::asio::ip::make_address("0.0.0.0");
 	boost::asio::ip::tcp::endpoint http_endpoint{address, 80};
@@ -121,9 +104,8 @@ int main(int argc, char **argv) {
 				}
 
 				boost::cobalt::spawn(*shared_pool,
-									 server.serve(*result->value()),
+									 serve_content(result->value()),
 									 asio::detached);
-				result->value().reset();
 			}
 		}(),
 		asio::detached);

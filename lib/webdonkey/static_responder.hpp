@@ -30,7 +30,7 @@ public:
 
 	template <class socket_stream>
 	expected_response operator()(request_context<socket_stream> &r_context,
-								 std::string_view target);
+								 std::string_view target) const;
 
 private:
 	std::filesystem::path _root;
@@ -41,7 +41,7 @@ private:
 template <class socket_stream>
 expected_response
 static_responder::operator()(request_context<socket_stream> &r_context,
-							 std::string_view target) {
+							 std::string_view target) const {
 	// Request path must be absolute and not contain "..".
 	if (target.find("..") != std::string_view::npos)
 		return std::unexpected{

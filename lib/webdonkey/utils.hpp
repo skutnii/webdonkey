@@ -74,6 +74,18 @@ static std::string_view prefix_matching(std::string_view path,
 	return path.substr(0, matches[0].length());
 }
 
+class defer {
+public:
+	template <typename functor>
+	defer(functor on_delete) :
+		_on_delete(on_delete) {}
+
+	~defer() { _on_delete(); }
+
+private:
+	std::function<void()> _on_delete;
+};
+
 } // namespace webdonkey
 
 #endif /* LIB_WEBDONKEY_HTTP_UTILS_HPP_ */
