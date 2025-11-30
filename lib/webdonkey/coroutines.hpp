@@ -13,6 +13,7 @@
 #include <boost/asio/awaitable.hpp>
 #include <coroutine>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -32,22 +33,19 @@ concept suspend = requires {
  * A coroutine that `co_yield`s a sequence of values
  * with void return type.
  */
-template <typename yield_type, suspend init_suspend,
-		  continuation_flavor flavor =
-			  continuation_storage_type<std::optional<yield_type>>()>
-class yielding {
+template <typename yield_type, suspend init_suspend> class yielding {
 public:
-	using self = yielding<yield_type, init_suspend, flavor>;
-	using result_type = std::optional<yield_type>;
-	using yield_continuation = continuation<std::optional<yield_type>, flavor>;
+	using self = yielding<yield_type, init_suspend>;
+	using yield_continuation = continuation<bool, continuation_flavor::copy>;
 
 	struct promise_type;
 	using handle_type = std::coroutine_handle<promise_type>;
 
 	struct promise_type {
 		yield_continuation _yield;
-		bool _returned = false;
+		std::unique_ptr<yield_type> _value;
 		std::recursive_mutex _mutex;
+		bool _returned = false;
 
 		self get_return_object() {
 			return self{handle_type::from_promise(*this)};
@@ -64,20 +62,24 @@ public:
 
 		std::suspend_always yield_value(yield_type &&from) {
 			std::lock_guard<std::recursive_mutex> state_lock{_mutex};
-			_yield(std::forward<yield_type>(from));
+			_value = std::make_unique<yield_type>(
+				std::forward<decltype(from)>(from));
+			_yield(true);
 			return {};
 		}
 
 		std::suspend_always yield_value(const yield_type &from) {
 			std::lock_guard<std::recursive_mutex> state_lock{_mutex};
-			_yield(std::move(from));
+			_value = std::make_unique<yield_type>(std::move(from));
+			_yield(true);
 			return {};
 		}
 
 		void return_void() {
 			std::lock_guard<std::recursive_mutex> state_lock{_mutex};
+			_value.reset();
 			_returned = true;
-			_yield(std::optional<yield_type>{});
+			_yield(false);
 		}
 	};
 
@@ -101,6 +103,10 @@ public:
 
 		return promise()._yield;
 	}
+
+	yield_type &get() const { return *_handle.promise()._value.get(); }
+	yield_type &operator*() const { return get(); }
+	yield_type *operator->() const { return _handle.promise()._value.get(); }
 
 private:
 	handle_type _handle;

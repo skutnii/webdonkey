@@ -146,8 +146,7 @@ using expected_request = std::expected<request_context_ptr<socket_stream>,
 									   boost::system::error_code>;
 
 template <class socket_stream>
-coroutine::yielding<expected_request<socket_stream>, std::suspend_always,
-					coroutine::continuation_flavor::copy>
+coroutine::yielding<expected_request<socket_stream>, std::suspend_always>
 accept_requests(std::shared_ptr<socket_stream> stream) {
 	for (;;) {
 		using context = request_context<socket_stream>;
@@ -170,27 +169,24 @@ accept_requests(std::shared_ptr<socket_stream> stream) {
 }
 
 inline static coroutine::yielding<expected_request<tcp_stream>,
-								  std::suspend_always,
-								  coroutine::continuation_flavor::copy>
+								  std::suspend_always>
 http(tcp::socket &socket) {
 	return accept_requests(std::make_shared<tcp_stream>(std::move(socket)));
 }
 
 inline static coroutine::yielding<expected_request<ssl_stream>,
-								  std::suspend_always,
-								  coroutine::continuation_flavor::copy>
+								  std::suspend_always>
 https(tcp::socket &socket, ssl::context &ssl_ctx) {
 	std::shared_ptr<ssl_stream> stream =
 		std::make_shared<ssl_stream>(std::move(socket), ssl_ctx);
 	stream->handshake(ssl::stream_base::server);
 	defer shutdown{[stream]() { stream->shutdown(); }};
 
-	coroutine::yielding<expected_request<ssl_stream>, std::suspend_always,
-						coroutine::continuation_flavor::copy>
-		request_gen = accept_requests(stream);
+	coroutine::yielding<expected_request<ssl_stream>, std::suspend_always>
+		next_request = accept_requests(stream);
 
-	while (auto maybe_request = co_await request_gen)
-		co_yield maybe_request.value();
+	while (co_await next_request)
+		co_yield *next_request;
 }
 
 struct protocol_error {

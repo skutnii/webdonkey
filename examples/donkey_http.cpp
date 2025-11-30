@@ -48,22 +48,17 @@ public:
 				co_return;
 			}
 
-			auto request_gen = http(*socket_or.value());
+			auto next_request = http(*socket_or.value());
 
-			std::cout << "Serving on thread: " << std::this_thread::get_id()
-					  << std::endl;
 			// Possibly switch to a new thread
 			co_await coroutine::hop(*_executor);
-			std::cout << "Resuming on thread: " << std::this_thread::get_id()
-					  << std::endl;
-			while (std::optional<expected_request<tcp_stream>> request_or =
-					   co_await request_gen) {
-				if (!request_or->has_value()) {
-					std::cerr << request_or->error().message() + "\n";
+			while (co_await next_request) {
+				if (!next_request->has_value()) {
+					std::cerr << next_request->error().message() + "\n";
 					continue;
 				}
 
-				request_context_ptr ctx = request_or->value();
+				request_context_ptr ctx = next_request->value();
 				std::cout << "Serving " + ctx->method_string() + " " +
 								 ctx->target() + "\n";
 				expected_response response_or = _respond(*ctx, ctx->target());
@@ -90,6 +85,13 @@ public:
 				std::cerr << "Response written\n";
 				if (!status.has_value())
 					std::cerr << status.error().message() + "\n";
+			}
+		} catch (boost::system::system_error &err) {
+			if (err.code() == beast::http::error::end_of_stream)
+				co_return;
+			else {
+				std::cerr << err.what() << std::endl;
+				co_return;
 			}
 		} catch (std::exception &err) {
 			std::cerr << err.what() << std::endl;

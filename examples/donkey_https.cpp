@@ -150,45 +150,58 @@ secure_server::secure_server(const char *doc_root) :
 webdonkey::coroutine::returning<void, std::suspend_never>
 secure_server::serve_content(webdonkey::accept_result socket_or) {
 	using namespace webdonkey;
-	if (!socket_or.has_value()) {
-		std::cerr << std::string{"Socket error: "} +
-						 socket_or.error().message() + "\n";
-		co_return;
-	}
-
-	auto request_gen = https(*socket_or.value(), _ssl_ctx);
-
-	coroutine::hop(*_executor);
-
-	while (std::optional<expected_request<ssl_stream>> request_or =
-			   co_await request_gen) {
-		if (!request_or->has_value()) {
-			std::cerr << request_or->error().message() + "\n";
-			continue;
+	try {
+		if (!socket_or.has_value()) {
+			std::cerr << std::string{"Socket error: "} +
+							 socket_or.error().message() + "\n";
+			co_return;
 		}
 
-		request_context_ptr ctx = request_or->value();
-		std::cout << "Serving " + ctx->method_string() + " " + ctx->target() +
-						 "\n";
-		expected_response response_or = _respond(*ctx, ctx->target());
-		response_ptr response{nullptr};
-		if (response_or.has_value())
-			response = response_or.value();
+		auto next_request = https(*socket_or.value(), _ssl_ctx);
+
+		coroutine::hop(*_executor);
+
+		while (co_await next_request) {
+			if (!next_request->has_value()) {
+				std::cerr << next_request->error().message() + "\n";
+				continue;
+			}
+
+			request_context_ptr ctx = next_request->value();
+			std::cout << "Serving " + ctx->method_string() + " " +
+							 ctx->target() + "\n";
+			expected_response response_or = _respond(*ctx, ctx->target());
+			response_ptr response{nullptr};
+			if (response_or.has_value())
+				response = response_or.value();
+			else {
+				std::cerr << "[HTTP error] " + response_or.error().message +
+								 "\n";
+				beast::http::response<beast::http::string_body> res{
+					response_or.error().status, ctx->request().version()};
+				res.set(boost::beast::http::field::server, version());
+				res.set(boost::beast::http::field::content_type, "text/html");
+				res.keep_alive(ctx->request().keep_alive());
+				res.body() = response_or.error().message;
+				res.prepare_payload();
+				response = std::make_shared<response_generator>(std::move(res));
+			}
+
+			auto status = co_await ctx->write(*response);
+			if (!status.has_value())
+				std::cerr << status.error().message() + "\n";
+		}
+	} catch (boost::system::system_error &err) {
+		if (err.code() == beast::http::error::end_of_stream)
+			co_return;
 		else {
-			std::cerr << "[HTTP error] " + response_or.error().message + "\n";
-			beast::http::response<beast::http::string_body> res{
-				response_or.error().status, ctx->request().version()};
-			res.set(boost::beast::http::field::server, version());
-			res.set(boost::beast::http::field::content_type, "text/html");
-			res.keep_alive(ctx->request().keep_alive());
-			res.body() = response_or.error().message;
-			res.prepare_payload();
-			response = std::make_shared<response_generator>(std::move(res));
+			std::cerr << err.what() << std::endl;
+			co_return;
 		}
-
-		auto status = co_await ctx->write(*response);
-		if (!status.has_value())
-			std::cerr << status.error().message() + "\n";
+	} catch (std::exception &err) {
+		std::cerr << err.what() << std::endl;
+	} catch (...) {
+		std::cerr << "Unknown error" << std::endl;
 	}
 }
 
@@ -197,42 +210,56 @@ secure_server::serve_content(webdonkey::accept_result socket_or) {
 webdonkey::coroutine::returning<void, std::suspend_never>
 secure_server::redirect(webdonkey::accept_result socket_or) {
 	using namespace webdonkey;
-	if (!socket_or.has_value()) {
-		std::cerr << std::string{"Socket error: "} +
-						 socket_or.error().message() + "\n";
-		co_return;
-	}
-
-	auto request_gen = http(*socket_or.value());
-	coroutine::hop(*_executor);
-
-	while (std::optional<expected_request<tcp_stream>> request_or =
-			   co_await request_gen) {
-		if (!request_or->has_value()) {
-			std::cerr << request_or->error().message() + "\n";
-			continue;
+	try {
+		if (!socket_or.has_value()) {
+			std::cerr << std::string{"Socket error: "} +
+							 socket_or.error().message() + "\n";
+			co_return;
 		}
 
-		request_context_ptr ctx = request_or->value();
-		beast::http::response<beast::http::empty_body> res{
-			beast::http::status::moved_permanently, ctx->request().version()};
-		res.set(boost::beast::http::field::server, version());
-		res.set(boost::beast::http::field::content_type, "text/html");
+		auto next_request = http(*socket_or.value());
+		coroutine::hop(*_executor);
 
-		std::stringstream url_builder;
-		url_builder << "https://" << ctx->request()[beast::http::field::host]
-					<< ctx->target();
-		std::string redirect_url = url_builder.str();
+		while (co_await next_request) {
+			if (!next_request->has_value()) {
+				std::cerr << next_request->error().message() + "\n";
+				continue;
+			}
 
-		std::stringstream log_stream;
-		log_stream << "Redirect " << ctx->method_string() << " "
-				   << ctx->target() << " to " << redirect_url << std::endl;
-		std::cout << log_stream.str();
+			request_context_ptr ctx = next_request->value();
+			beast::http::response<beast::http::empty_body> res{
+				beast::http::status::moved_permanently,
+				ctx->request().version()};
+			res.set(boost::beast::http::field::server, version());
+			res.set(boost::beast::http::field::content_type, "text/html");
 
-		res.set(beast::http::field::location, redirect_url);
-		res.keep_alive(true);
-		res.prepare_payload();
-		auto result = co_await ctx->write(res);
+			std::stringstream url_builder;
+			url_builder << "https://"
+						<< ctx->request()[beast::http::field::host]
+						<< ctx->target();
+			std::string redirect_url = url_builder.str();
+
+			std::stringstream log_stream;
+			log_stream << "Redirect " << ctx->method_string() << " "
+					   << ctx->target() << " to " << redirect_url << std::endl;
+			std::cout << log_stream.str();
+
+			res.set(beast::http::field::location, redirect_url);
+			res.keep_alive(true);
+			res.prepare_payload();
+			auto result = co_await ctx->write(res);
+		}
+	} catch (boost::system::system_error &err) {
+		if (err.code() == beast::http::error::end_of_stream)
+			co_return;
+		else {
+			std::cerr << err.what() << std::endl;
+			co_return;
+		}
+	} catch (std::exception &err) {
+		std::cerr << err.what() << std::endl;
+	} catch (...) {
+		std::cerr << "Unknown error" << std::endl;
 	}
 }
 
