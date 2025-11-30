@@ -237,9 +237,9 @@ int main(int argc, char **argv) {
 
 	// Check command line arguments.
 	if (argc != 2) {
-		std::cerr << "Usage: donkey_http <doc_root>" << std::endl
+		std::cerr << "Usage: donkey_https <doc_root>" << std::endl
 				  << "Example:" << std::endl
-				  << "    donkey_http /path/to/htdocs" << std::endl;
+				  << "    donkey_https /path/to/htdocs" << std::endl;
 		return EXIT_FAILURE;
 	}
 
