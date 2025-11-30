@@ -28,10 +28,71 @@
 
 struct server_context {};
 
-using thread_pool = boost::asio::thread_pool;
-namespace coroutine = webdonkey::coroutine;
+using io_context = boost::asio::io_context;
 
-static const std::string version{"webdonkey HTTP example"};
+class simple_server {
+public:
+	simple_server(const char *doc_root) :
+		_respond{doc_root, "index.html", version()} {}
+
+	static std::string version() { return "webdonkey HTTP example"; }
+
+	webdonkey::coroutine::returning<void, std::suspend_always>
+	serve(webdonkey::accept_result socket_or) {
+		using namespace webdonkey;
+		try {
+			if (!socket_or.has_value()) {
+				std::cerr << std::string{"Socket error: "} +
+								 socket_or.error().message() + "\n";
+				co_return;
+			}
+
+			auto next_req = http(*socket_or.value());
+			while (std::optional<expected_request<tcp_stream>> request_or =
+					   co_await next_req) {
+				if (!request_or->has_value()) {
+					std::cerr << request_or->error().message() + "\n";
+					continue;
+				}
+
+				request_context_ptr ctx = request_or->value();
+				std::cout << "Serving " + ctx->method_string() + " " +
+								 ctx->target() + "\n";
+				expected_response response_or = _respond(*ctx, ctx->target());
+				response_ptr response{nullptr};
+				if (response_or.has_value())
+					response = response_or.value();
+				else {
+					std::cerr
+						<< "[HTTP error] " + response_or.error().message + "\n";
+					beast::http::response<beast::http::string_body> res{
+						response_or.error().status, ctx->request().version()};
+					res.set(boost::beast::http::field::server, version());
+					res.set(boost::beast::http::field::content_type,
+							"text/html");
+					res.keep_alive(ctx->request().keep_alive());
+					res.body() = response_or.error().message;
+					res.prepare_payload();
+					response =
+						std::make_shared<response_generator>(std::move(res));
+				}
+
+				std::cerr << "Writing response\n";
+				auto status = co_await ctx->write(*response);
+				std::cerr << "Response written\n";
+				if (!status.has_value())
+					std::cerr << status.error().message() + "\n";
+			}
+		} catch (std::exception &err) {
+			std::cerr << err.what() << std::endl;
+		} catch (...) {
+			std::cerr << "Unknown error" << std::endl;
+		}
+	}
+
+private:
+	webdonkey::static_responder _respond;
+};
 
 //==============================================================================
 
@@ -39,78 +100,31 @@ int main(int argc, char **argv) {
 	using namespace webdonkey;
 
 	// Check command line arguments.
-	if (argc != 3) {
-		std::cerr << "Usage: donkey_http <doc_root> <port>" << std::endl
+	if (argc != 2) {
+		std::cerr << "Usage: donkey_http <doc_root>" << std::endl
 				  << "Example:" << std::endl
-				  << "    donkey_http /path/to/htdocs 80" << std::endl;
+				  << "    donkey_http /path/to/htdocs" << std::endl;
 		return EXIT_FAILURE;
 	}
 
-	shared_object<server_context, thread_pool> shared_pool{
-		std::make_shared<thread_pool>(8)};
+	shared_object<server_context, io_context> io_ctx{
+		std::make_shared<io_context>(1)};
 
-	std::filesystem::path doc_root{argv[1]};
-	static_responder serve_static{doc_root, "index.html", version};
-
-	auto serve_content = [&](socket_ptr socket) -> boost::cobalt::task<void> {
-		auto next_req = http_request(*socket);
-		while (std::optional<expected_request<tcp_stream>> request_or =
-				   co_await next_req) {
-			if (!request_or->has_value()) {
-				std::cerr << request_or->error().message() + "\n";
-				continue;
-			}
-
-			request_context_ptr ctx = request_or->value();
-			std::cout << "Serving " + ctx->method_string() + " " +
-							 ctx->target() + "\n";
-			expected_response response_or = serve_static(*ctx, ctx->target());
-			response_ptr response{nullptr};
-			if (response_or.has_value())
-				response = response_or.value();
-			else {
-				std::cerr << "[HTTP error] " + response_or.error().message +
-								 "\n";
-				beast::http::response<beast::http::string_body> res{
-					response_or.error().status, ctx->request().version()};
-				res.set(boost::beast::http::field::server, version);
-				res.set(boost::beast::http::field::content_type, "text/html");
-				res.keep_alive(ctx->request().keep_alive());
-				res.body() = response_or.error().message;
-				res.prepare_payload();
-				response = std::make_shared<response_generator>(std::move(res));
-			}
-
-			auto status = co_await ctx->co_write(*response);
-			if (!status.has_value())
-				std::cerr << status.error().message() + "\n";
-		}
-	};
-
+	auto srv = std::make_shared<simple_server>(argv[1]);
 	auto const address = boost::asio::ip::make_address("0.0.0.0");
 	boost::asio::ip::tcp::endpoint http_endpoint{address, 80};
+	tcp_listener<server_context, io_context> http_listener{
+		http_endpoint,
+		[srv](accept_result socket_or)
+			-> coroutine::returning<void, std::suspend_always> {
+			return srv->serve(socket_or);
+		}};
 
-	tcp_listener<server_context, thread_pool> http_listener{http_endpoint};
-
-	boost::cobalt::spawn(
-		*shared_pool,
-		[&]() -> boost::cobalt::task<void> {
-			auto accept = http_listener.accept();
-			while (auto result = co_await accept) {
-				if (!result->has_value()) {
-					std::cerr
-						<< "Socket error: " + result->error().message() + "\n";
-					co_return;
-				}
-
-				boost::cobalt::spawn(*shared_pool,
-									 serve_content(result->value()),
-									 asio::detached);
-			}
-		}(),
-		asio::detached);
-
-	shared_pool->join();
+	std::vector<std::thread> threads;
+	threads.reserve(7);
+	for (unsigned int i = 0; i < 7; ++i)
+		threads.emplace_back([&]() { io_ctx->run(); });
+	io_ctx->run();
 
 	return 0;
 }

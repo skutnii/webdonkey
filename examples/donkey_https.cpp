@@ -5,6 +5,7 @@
  *      Author: Sergii Kutnii
  */
 
+#include "webdonkey/coroutines.hpp"
 #include "webdonkey/defs.hpp"
 #include "webdonkey/tcp_listener.hpp"
 #include <boost/asio/awaitable.hpp>
@@ -17,7 +18,7 @@
 #include <boost/beast/http/string_body_fwd.hpp>
 #include <boost/cobalt.hpp>
 #include <boost/cobalt/spawn.hpp>
-#include <exception>
+#include <coroutine>
 #include <iostream>
 #include <sstream>
 #include <webdonkey/contextual.hpp>
@@ -28,7 +29,30 @@ struct server_context {};
 
 using thread_pool = boost::asio::thread_pool;
 
-void load_server_certificate(boost::asio::ssl::context &ctx) {
+class secure_server {
+public:
+	secure_server(const char *doc_root);
+
+	static std::string version() { return "webdonkey HTTP example"; }
+
+	webdonkey::coroutine::returning<void, std::suspend_always>
+	serve_content(webdonkey::accept_result socket_or);
+
+	webdonkey::coroutine::returning<void, std::suspend_always>
+	redirect(webdonkey::accept_result socket_or);
+
+private:
+	webdonkey::ssl::context _ssl_ctx;
+	webdonkey::static_responder _respond;
+};
+
+//==============================================================================
+
+secure_server::secure_server(const char *doc_root) :
+	_ssl_ctx(webdonkey::ssl::context::tlsv12),
+	_respond{doc_root, "index.html", version()} {
+	// Load certificates
+
 	/*
 		The certificate was generated from CMD.EXE on Windows 10 using:
 
@@ -101,22 +125,111 @@ void load_server_certificate(boost::asio::ssl::context &ctx) {
 		"QMUk26jPTIVTLfXmmwU0u8vUkpR7LQKkwwIBAg==\n"
 		"-----END DH PARAMETERS-----\n";
 
-	ctx.set_password_callback(
+	_ssl_ctx.set_password_callback(
 		[](std::size_t, boost::asio::ssl::context_base::password_purpose) {
 			return "test";
 		});
 
-	ctx.set_options(boost::asio::ssl::context::default_workarounds |
-					boost::asio::ssl::context::no_sslv2 |
-					boost::asio::ssl::context::single_dh_use);
+	_ssl_ctx.set_options(boost::asio::ssl::context::default_workarounds |
+						 boost::asio::ssl::context::no_sslv2 |
+						 boost::asio::ssl::context::single_dh_use);
 
-	ctx.use_certificate_chain(boost::asio::buffer(cert.data(), cert.size()));
+	_ssl_ctx.use_certificate_chain(
+		boost::asio::buffer(cert.data(), cert.size()));
 
-	ctx.use_private_key(boost::asio::buffer(key.data(), key.size()),
-						boost::asio::ssl::context::file_format::pem);
+	_ssl_ctx.use_private_key(boost::asio::buffer(key.data(), key.size()),
+							 boost::asio::ssl::context::file_format::pem);
 
-	ctx.use_tmp_dh(boost::asio::buffer(dh.data(), dh.size()));
+	_ssl_ctx.use_tmp_dh(boost::asio::buffer(dh.data(), dh.size()));
 }
+
+//=============================================================================-
+
+webdonkey::coroutine::returning<void, std::suspend_always>
+secure_server::serve_content(webdonkey::accept_result socket_or) {
+	using namespace webdonkey;
+	if (!socket_or.has_value()) {
+		std::cerr << std::string{"Socket error: "} +
+						 socket_or.error().message() + "\n";
+		co_return;
+	}
+
+	auto request_gen = https(*socket_or.value(), _ssl_ctx);
+	while (std::optional<expected_request<ssl_stream>> request_or =
+			   co_await request_gen) {
+		if (!request_or->has_value()) {
+			std::cerr << request_or->error().message() + "\n";
+			continue;
+		}
+
+		request_context_ptr ctx = request_or->value();
+		std::cout << "Serving " + ctx->method_string() + " " + ctx->target() +
+						 "\n";
+		expected_response response_or = _respond(*ctx, ctx->target());
+		response_ptr response{nullptr};
+		if (response_or.has_value())
+			response = response_or.value();
+		else {
+			std::cerr << "[HTTP error] " + response_or.error().message + "\n";
+			beast::http::response<beast::http::string_body> res{
+				response_or.error().status, ctx->request().version()};
+			res.set(boost::beast::http::field::server, version());
+			res.set(boost::beast::http::field::content_type, "text/html");
+			res.keep_alive(ctx->request().keep_alive());
+			res.body() = response_or.error().message;
+			res.prepare_payload();
+			response = std::make_shared<response_generator>(std::move(res));
+		}
+
+		auto status = co_await ctx->write(*response);
+		if (!status.has_value())
+			std::cerr << status.error().message() + "\n";
+	}
+}
+
+//=============================================================================-
+
+webdonkey::coroutine::returning<void, std::suspend_always>
+secure_server::redirect(webdonkey::accept_result socket_or) {
+	using namespace webdonkey;
+	if (!socket_or.has_value()) {
+		std::cerr << std::string{"Socket error: "} +
+						 socket_or.error().message() + "\n";
+		co_return;
+	}
+
+	auto request_gen = http(*socket_or.value());
+	while (std::optional<expected_request<tcp_stream>> request_or =
+			   co_await request_gen) {
+		if (!request_or->has_value()) {
+			std::cerr << request_or->error().message() + "\n";
+			continue;
+		}
+
+		request_context_ptr ctx = request_or->value();
+		beast::http::response<beast::http::empty_body> res{
+			beast::http::status::moved_permanently, ctx->request().version()};
+		res.set(boost::beast::http::field::server, version());
+		res.set(boost::beast::http::field::content_type, "text/html");
+
+		std::stringstream url_builder;
+		url_builder << "https://" << ctx->request()[beast::http::field::host]
+					<< ctx->target();
+		std::string redirect_url = url_builder.str();
+
+		std::stringstream log_stream;
+		log_stream << "Redirect " << ctx->method_string() << " "
+				   << ctx->target() << " to " << redirect_url << std::endl;
+		std::cout << log_stream.str();
+
+		res.set(beast::http::field::location, redirect_url);
+		res.keep_alive(true);
+		res.prepare_payload();
+		auto result = co_await ctx->write(res);
+	}
+}
+
+//=============================================================================-
 
 int main(int argc, char **argv) {
 
@@ -133,125 +246,24 @@ int main(int argc, char **argv) {
 	shared_object<server_context, thread_pool> shared_pool{
 		std::make_shared<thread_pool>(8)};
 
-	ssl::context ssl_ctx{ssl::context::tlsv12};
-	load_server_certificate(ssl_ctx);
-
-	std::filesystem::path doc_root{argv[1]};
-	std::string version = "webdonkey HTTP example";
-
-	static_responder serve_static{doc_root, "index.html", version};
-
-	auto serve_content = [&](socket_ptr socket) -> boost::cobalt::task<void> {
-		auto next_req = https_request(*socket, ssl_ctx);
-		while (std::optional<expected_request<ssl_stream>> request_or =
-				   co_await next_req) {
-			if (!request_or->has_value()) {
-				std::cerr << request_or->error().message() + "\n";
-				continue;
-			}
-
-			request_context_ptr ctx = request_or->value();
-			std::cout << "Serving " + ctx->method_string() + " " +
-							 ctx->target() + "\n";
-			expected_response response_or = serve_static(*ctx, ctx->target());
-			response_ptr response{nullptr};
-			if (response_or.has_value())
-				response = response_or.value();
-			else {
-				std::cerr << "[HTTP error] " + response_or.error().message +
-								 "\n";
-				beast::http::response<beast::http::string_body> res{
-					response_or.error().status, ctx->request().version()};
-				res.set(boost::beast::http::field::server, version);
-				res.set(boost::beast::http::field::content_type, "text/html");
-				res.keep_alive(ctx->request().keep_alive());
-				res.body() = response_or.error().message;
-				res.prepare_payload();
-				response = std::make_shared<response_generator>(std::move(res));
-			}
-
-			auto status = co_await ctx->co_write(*response);
-			if (!status.has_value())
-				std::cerr << status.error().message() + "\n";
-		}
-	};
+	auto srv = std::make_shared<secure_server>(argv[1]);
 
 	auto const address = boost::asio::ip::make_address("0.0.0.0");
 	boost::asio::ip::tcp::endpoint https_endpoint{address, 443};
-
-	tcp_listener<server_context, thread_pool> https_listener{https_endpoint};
-
-	boost::cobalt::spawn(
-		*shared_pool,
-		[&]() -> boost::cobalt::task<void> {
-			auto accept = https_listener.accept();
-			while (auto result = co_await accept) {
-				if (!result->has_value()) {
-					std::cerr
-						<< "Socket error: " + result->error().message() + "\n";
-					co_return;
-				}
-
-				boost::cobalt::spawn(*shared_pool,
-									 serve_content(result->value()),
-									 asio::detached);
-			}
-		}(),
-		asio::detached);
-
-	auto redirect = [&](socket_ptr socket) -> boost::cobalt::task<void> {
-		auto next_req = http_request(*socket);
-		while (std::optional<expected_request<tcp_stream>> request_or =
-				   co_await next_req) {
-			if (!request_or->has_value()) {
-				std::cerr << request_or->error().message() + "\n";
-				continue;
-			}
-
-			request_context_ptr ctx = request_or->value();
-			beast::http::response<beast::http::empty_body> res{
-				beast::http::status::moved_permanently,
-				ctx->request().version()};
-			res.set(boost::beast::http::field::server, version);
-			res.set(boost::beast::http::field::content_type, "text/html");
-
-			std::stringstream url_builder;
-			url_builder << "https://"
-						<< ctx->request()[beast::http::field::host]
-						<< ctx->target();
-			std::string redirect_url = url_builder.str();
-
-			std::stringstream log_stream;
-			log_stream << "Redirect " << ctx->method_string() << " "
-					   << ctx->target() << " to " << redirect_url << std::endl;
-			std::cout << log_stream.str();
-
-			res.set(beast::http::field::location, redirect_url);
-			res.keep_alive(true);
-			res.prepare_payload();
-			auto result = co_await ctx->co_write(res);
-		}
-	};
+	tcp_listener<server_context, thread_pool> https_listener{
+		https_endpoint,
+		[srv](const accept_result &socket_or)
+			-> coroutine::returning<void, std::suspend_always> {
+			return srv->serve_content(socket_or);
+		}};
 
 	boost::asio::ip::tcp::endpoint http_endpoint{address, 80};
-	tcp_listener<server_context, thread_pool> http_listener{http_endpoint};
-
-	boost::cobalt::spawn(
-		*shared_pool,
-		[&]() -> boost::cobalt::task<void> {
-			auto accept = http_listener.accept();
-			while (auto result = co_await accept) {
-				if (!result->has_value()) {
-					std::cerr
-						<< "Socket error: " + result->error().message() + "\n";
-					co_return;
-				}
-
-				boost::cobalt::spawn(*shared_pool, redirect(result->value()),
-									 asio::detached);
-			}
-		}(),
-		asio::detached);
+	tcp_listener<server_context, thread_pool> http_listener{
+		http_endpoint,
+		[srv](const accept_result &socket_or)
+			-> coroutine::returning<void, std::suspend_always> {
+			return srv->redirect(socket_or);
+		}};
 
 	shared_pool->join();
 

@@ -85,8 +85,6 @@ public:
 	yielding(handle_type handle) :
 		_handle{handle} {}
 
-	~yielding() { _handle.destroy(); }
-
 	promise_type &promise() { return _handle.promise(); }
 
 	/**
@@ -149,12 +147,18 @@ public:
 	returning(handle_type handle) :
 		_handle{handle} {}
 
-	~returning() { _handle.destroy(); }
+	returning(const self &) = default;
+	returning(self &&) = default;
+
+	self &operator=(const self &) = default;
+	self &operator=(self &&) = default;
 
 	return_continuation &operator co_await() {
 		_handle.resume();
 		return _handle.promise()._return;
 	}
+
+	void operator()() { _handle.resume(); }
 
 private:
 	handle_type _handle;
@@ -193,12 +197,18 @@ public:
 	returning(handle_type handle) :
 		_handle{handle} {}
 
-	~returning() { _handle.destroy(); }
+	returning(const self &) = default;
+	returning(self &&) = default;
+
+	self &operator=(const self &) = default;
+	self &operator=(self &&) = default;
 
 	return_continuation &operator co_await() {
 		_handle.resume();
 		return _handle.promise()._return;
 	}
+
+	void operator()() { _handle.resume(); }
 
 private:
 	handle_type _handle;
@@ -293,8 +303,6 @@ public:
 
 	combined(handle_type handle) :
 		_handle{handle} {}
-
-	~combined() { _handle.destroy(); };
 
 	promise_type &promise() { return _handle.promise(); }
 

@@ -30,7 +30,9 @@ using response_ptr = std::shared_ptr<response_generator>;
 
 template <class socket_stream> class request_context {
 public:
-	request_context(socket_stream &s) :
+	using stream_ptr = std::shared_ptr<socket_stream>;
+
+	request_context(const stream_ptr &s) :
 		_stream{s} {};
 
 	request_context(const request_context<socket_stream> &) = delete;
@@ -51,12 +53,12 @@ public:
 	using io_result = std::expected<size_t, boost::system::error_code>;
 
 	coroutine::continuation<io_result, coroutine::value_storage::copy>
-	co_read_header() {
+	read_header() {
 		using continuation =
 			coroutine::continuation<io_result, coroutine::value_storage::copy>;
 		continuation then;
 		beast::http::async_read_header(
-			_stream, _buffer, _parser,
+			*_stream, _buffer, _parser,
 			[then](
 				boost::system::error_code const &error, // result of operation
 				std::size_t bytes_transferred) {
@@ -68,27 +70,13 @@ public:
 		return then;
 	}
 
-	awaitable<std::size_t> read_header() {
-		return beast::http::async_read_header(_stream, _buffer, _parser,
-											  asio::use_awaitable);
-	}
-
-	template <class body>
-	asio::awaitable<std::size_t> write(beast::http::response<body> &response) {
-		return beast::http::async_write(_stream, response, asio::use_awaitable);
-	}
-
-	awaitable<std::size_t> write(response_generator &gen) {
-		return beast::async_write(_stream, std::move(gen), asio::use_awaitable);
-	}
-
 	coroutine::continuation<io_result, coroutine::value_storage::copy>
-	co_write(response_generator &gen) {
+	write(response_generator &gen) {
 		using continuation =
 			coroutine::continuation<io_result, coroutine::value_storage::copy>;
 		continuation then;
 		beast::async_write(
-			_stream, std::move(gen),
+			*_stream, std::move(gen),
 			[then](
 				boost::system::error_code const &error, // result of operation
 				std::size_t bytes_transferred) {
@@ -102,12 +90,12 @@ public:
 
 	template <class body>
 	coroutine::continuation<io_result, coroutine::value_storage::copy>
-	co_write(beast::http::response<body> &res) {
+	write(beast::http::response<body> &res) {
 		using continuation =
 			coroutine::continuation<io_result, coroutine::value_storage::copy>;
 		continuation then;
 		beast::http::async_write(
-			_stream, res,
+			*_stream, res,
 			[then](
 				boost::system::error_code const &error, // result of operation
 				std::size_t bytes_transferred) {
@@ -142,39 +130,10 @@ public:
 
 private:
 	std::optional<bool> _force_keep_alive;
-	socket_stream &_stream;
+	stream_ptr _stream;
 	request_buffer _buffer;
 	request_parser _parser;
 };
-
-template <typename responder_type, class socket_stream>
-awaitable<void> serve(socket_stream &stream, responder_type respond) {
-	request_context<socket_stream> ctx{std::forward<decltype(stream)>(stream)};
-	for (;;) {
-		try {
-			request_context<socket_stream> ctx{
-				std::forward<decltype(stream)>(stream)};
-			co_await ctx.read_header();
-			response_ptr response = co_await respond(ctx);
-
-			/*
-			 * Implementations may choose to write responses to the stream
-			 * directly instead of returning them.
-			 */
-			if (response)
-				co_await ctx.write(*response);
-
-			if (!ctx.keep_alive())
-				break;
-		} catch (boost::system::system_error &err) {
-			// Client hangup
-			if (err.code() == beast::http::error::end_of_stream)
-				break;
-			else
-				throw;
-		}
-	}
-}
 
 template <class socket_stream>
 using request_context_ptr = std::shared_ptr<request_context<socket_stream>>;
@@ -186,12 +145,12 @@ using expected_request = std::expected<request_context_ptr<socket_stream>,
 template <class socket_stream>
 coroutine::yielding<expected_request<socket_stream>, std::suspend_always,
 					coroutine::value_storage::copy>
-next_request(std::shared_ptr<socket_stream> stream) {
+accept_requests(std::shared_ptr<socket_stream> stream) {
 	for (;;) {
 		using context = request_context<socket_stream>;
 		request_context_ptr<socket_stream> ctx =
-			std::make_shared<context>(*stream);
-		typename context::io_result status = co_await ctx->co_read_header();
+			std::make_shared<context>(stream);
+		typename context::io_result status = co_await ctx->read_header();
 		if (!status.has_value()) {
 			if ((status.error() != beast::http::error::end_of_stream) &&
 				(status.error() != beast::http::error::partial_message))
@@ -210,14 +169,14 @@ next_request(std::shared_ptr<socket_stream> stream) {
 inline static coroutine::yielding<expected_request<tcp_stream>,
 								  std::suspend_always,
 								  coroutine::value_storage::copy>
-http_request(tcp::socket &socket) {
-	return next_request(std::make_shared<tcp_stream>(std::move(socket)));
+http(tcp::socket &socket) {
+	return accept_requests(std::make_shared<tcp_stream>(std::move(socket)));
 }
 
 inline static coroutine::yielding<expected_request<ssl_stream>,
 								  std::suspend_always,
 								  coroutine::value_storage::copy>
-https_request(tcp::socket &socket, ssl::context &ssl_ctx) {
+https(tcp::socket &socket, ssl::context &ssl_ctx) {
 	std::shared_ptr<ssl_stream> stream =
 		std::make_shared<ssl_stream>(std::move(socket), ssl_ctx);
 	stream->handshake(ssl::stream_base::server);
@@ -225,25 +184,10 @@ https_request(tcp::socket &socket, ssl::context &ssl_ctx) {
 
 	coroutine::yielding<expected_request<ssl_stream>, std::suspend_always,
 						coroutine::value_storage::copy>
-		next = next_request(stream);
+		request_gen = accept_requests(stream);
 
-	while (auto maybe_request = co_await next)
+	while (auto maybe_request = co_await request_gen)
 		co_yield maybe_request.value();
-}
-
-template <typename server_type>
-awaitable<void> http(tcp::socket &socket, server_type server) {
-	tcp_stream stream{std::move(socket)};
-	co_await serve(stream, server);
-}
-
-template <typename server_type>
-awaitable<void> https(tcp::socket &socket, ssl::context &ssl_ctx,
-					  server_type server) {
-	ssl_stream stream{std::move(socket), ssl_ctx};
-	stream.handshake(ssl::stream_base::server);
-	co_await serve(stream, server);
-	stream.shutdown();
 }
 
 struct protocol_error {

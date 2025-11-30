@@ -51,7 +51,12 @@ public:
 	void await_suspend(std::coroutine_handle<caller_promise> h) {
 		std::lock_guard<std::recursive_mutex> access_lock(
 			_state->_access_mutex);
-		_state->_resume = [h]() { h.resume(); };
+		void *address = h.address();
+		_state->_resume = [address]() {
+			std::coroutine_handle<caller_promise>::from_address(address)
+				.resume();
+		};
+
 		if (_state->_suspend)
 			_state->_suspend();
 	}
@@ -85,9 +90,9 @@ public:
 	void operator()(const value_type &val) {
 		std::lock_guard<std::recursive_mutex> access_lock(
 			_state->_access_mutex);
-		if (_state->_resume) {
+		if (_state->resumable()) {
 			_state->_short_lived_value = &val;
-			swap_resume();
+			pop_resume();
 		} else {
 			_state->_long_lived_value =
 				std::make_unique<value_type>(std::move(val));
@@ -98,14 +103,14 @@ public:
 		std::lock_guard<std::recursive_mutex> access_lock(
 			_state->_access_mutex);
 		_state->_exception = exception;
-		if (_state->_resume)
-			swap_resume();
+		if (_state->resumable())
+			pop_resume();
 	}
 
 private:
-	void swap_resume() {
-		std::function<void()> resume;
-		std::swap(resume, _state->_resume);
+	void pop_resume() {
+		std::function<void()> resume = _state->_resume;
+		_state->_resume = nullptr;
 		resume();
 	}
 
@@ -116,9 +121,11 @@ private:
 		std::function<void()> _resume;
 		std::function<void()> _suspend;
 		std::recursive_mutex _access_mutex;
+
+		bool resumable() const { return (_resume != nullptr); }
 	};
 
-	std::shared_ptr<state> _state = std::make_shared<state>();
+	std::shared_ptr<state> _state{std::make_shared<state>()};
 };
 
 template <typename value_type>
@@ -134,7 +141,12 @@ public:
 	void await_suspend(std::coroutine_handle<caller_promise> h) {
 		std::lock_guard<std::recursive_mutex> access_lock(
 			_state->_access_mutex);
-		_state->_resume = [h]() { h.resume(); };
+		void *address = h.address();
+		_state->_resume = [address]() {
+			std::coroutine_handle<caller_promise>::from_address(address)
+				.resume();
+		};
+
 		if (_state->_suspend)
 			_state->_suspend();
 	}
@@ -162,97 +174,116 @@ public:
 		std::lock_guard<std::recursive_mutex> access_lock(
 			_state->_access_mutex);
 		_state->_value = val;
-		if (_state->_resume)
-			swap_resume();
+		if (_state->resumable())
+			pop_resume();
 	}
 
 	void operator()(std::exception_ptr exception) {
 		std::lock_guard<std::recursive_mutex> access_lock(
 			_state->_access_mutex);
 		_state->_exception = exception;
-		if (_state->_resume)
-			swap_resume();
+		if (_state->resumable())
+			pop_resume();
 	}
 
 	std::exception_ptr exception() { return _state->_exception; }
 
 private:
-	void swap_resume() {
-		std::function<void()> resume;
-		std::swap(resume, _state->_resume);
+	void pop_resume() {
+		std::function<void()> resume = _state->_resume;
+		_state->_resume = nullptr;
 		resume();
 	}
 
 	struct state {
-		value_type _value;
 		bool _ready = false;
+		value_type _value;
 		std::exception_ptr _exception;
 		std::function<void()> _resume;
 		std::function<void()> _suspend;
 		std::recursive_mutex _access_mutex;
+
+		bool resumable() const { return (_resume != nullptr); }
 	};
 
-	std::shared_ptr<state> _state = std::make_shared<state>();
+	std::shared_ptr<state> _state{std::make_shared<state>()};
 };
 
 template <> class continuation<void> {
 public:
 	bool await_ready() {
-		std::lock_guard<std::recursive_mutex> access_lock(_access_mutex);
-		return _ready || _exception;
+		std::lock_guard<std::recursive_mutex> access_lock(
+			_state->_access_mutex);
+		return _state->_ready || _state->_exception;
 	}
 
 	template <typename caller_promise>
 	void await_suspend(std::coroutine_handle<caller_promise> h) {
-		std::lock_guard<std::recursive_mutex> access_lock(_access_mutex);
-		_resume = [h]() { h.resume(); };
-		if (_suspend)
-			_suspend();
+		std::lock_guard<std::recursive_mutex> access_lock(
+			_state->_access_mutex);
+		void *address = h.address();
+		_state->_resume = [address]() {
+			std::coroutine_handle<caller_promise>::from_address(address)
+				.resume();
+		};
+
+		if (_state->_suspend)
+			_state->_suspend();
 	}
 
 	void await_resume() {
-		std::lock_guard<std::recursive_mutex> access_lock(_access_mutex);
-		if (_exception) {
+		std::lock_guard<std::recursive_mutex> access_lock(
+			_state->_access_mutex);
+		if (_state->_exception) {
 			std::exception_ptr ex;
-			std::swap(_exception, ex);
+			std::swap(_state->_exception, ex);
 			std::rethrow_exception(ex);
 		}
 
-		_ready = false;
+		_state->_ready = false;
 	}
 
 	template <typename functor> void on_suspend(functor suspend) {
-		std::lock_guard<std::recursive_mutex> access_lock(_access_mutex);
-		_suspend = suspend;
+		std::lock_guard<std::recursive_mutex> access_lock(
+			_state->_access_mutex);
+		_state->_suspend = suspend;
 	}
 
 	void operator()() {
-		std::lock_guard<std::recursive_mutex> access_lock(_access_mutex);
-		if (_resume)
-			swap_resume();
+		std::lock_guard<std::recursive_mutex> access_lock(
+			_state->_access_mutex);
+		if (_state->resumable())
+			pop_resume();
 	}
 
 	void operator()(std::exception_ptr exception) {
-		std::lock_guard<std::recursive_mutex> access_lock(_access_mutex);
-		_exception = exception;
-		if (_resume)
-			swap_resume();
+		std::lock_guard<std::recursive_mutex> access_lock(
+			_state->_access_mutex);
+		_state->_exception = exception;
+		if (_state->resumable())
+			pop_resume();
 	}
 
-	std::exception_ptr exception() { return _exception; }
+	std::exception_ptr exception() { return _state->_exception; }
 
 private:
-	void swap_resume() {
-		std::function<void()> resume;
-		std::swap(resume, _resume);
+	void pop_resume() {
+		std::function<void()> resume = _state->_resume;
+		_state->_resume = nullptr;
 		resume();
 	}
 
-	bool _ready = false;
-	std::exception_ptr _exception;
-	std::function<void()> _resume;
-	std::function<void()> _suspend;
-	std::recursive_mutex _access_mutex;
+	struct state {
+		bool _ready = false;
+		std::exception_ptr _exception;
+		std::function<void()> _resume;
+		std::function<void()> _suspend;
+		std::recursive_mutex _access_mutex;
+
+		bool resumable() const { return (_resume != nullptr); }
+	};
+
+	std::shared_ptr<state> _state = std::make_shared<state>();
 };
 
 } // namespace coroutine

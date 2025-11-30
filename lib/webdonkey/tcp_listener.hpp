@@ -17,57 +17,49 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/cobalt.hpp>
+#include <boost/cobalt/spawn.hpp>
 #include <expected>
 #include <webdonkey/contextual.hpp>
 #include <webdonkey/coroutines.hpp>
 
 namespace webdonkey {
 
+using accept_result = std::expected<socket_ptr, boost::system::error_code>;
+using socket_acceptor = coroutine::yielding<accept_result, std::suspend_always,
+											coroutine::value_storage::copy>;
+
 template <class context, class executor> class tcp_listener {
 public:
-	using accept_result = std::expected<socket_ptr, boost::system::error_code>;
-	using socket_acceptor =
-		coroutine::yielding<accept_result, std::suspend_always,
-							coroutine::value_storage::copy>;
-
 	void stop() { _state->stopped = true; }
 	bool stopped() const { return _state->stopped; }
 
-	tcp_listener(const tcp::endpoint &endpoint) {
-		_state = std::make_shared<state>();
+	template <typename socket_handler>
+	tcp_listener(const tcp::endpoint &endpoint, socket_handler handler) {
+		state_ptr shared_state = std::make_shared<state>();
+		_state = shared_state;
 
 		_state->acceptor.open(endpoint.protocol());
 		_state->acceptor.set_option(asio::socket_base::reuse_address(true));
 		_state->acceptor.bind(endpoint);
 		_state->acceptor.listen(asio::socket_base::max_listen_connections);
-	}
 
-	using executor_ptr = managed_ptr<context, executor>;
-	template <typename handler_type>
-	tcp_listener(const tcp::endpoint &endpoint, handler_type socket_handler) {
-		state_ptr shared_state = std::make_shared<state>();
-
-		shared_state->acceptor.open(endpoint.protocol());
-		shared_state->acceptor.set_option(
-			asio::socket_base::reuse_address(true));
-		shared_state->acceptor.bind(endpoint);
-		shared_state->acceptor.listen(
-			asio::socket_base::max_listen_connections);
-
-		asio::co_spawn(*shared_state->exec,
-					   accept_connections(shared_state, socket_handler),
-					   asio::detached);
-
-		_state = shared_state;
+		asio::post(*_state->exec, handle_connections(_state, handler));
 	}
 
 	~tcp_listener() { stop(); }
 
 	socket_acceptor accept() { return accept_connections(_state); }
 
+	template <typename socket_handler> void attach(socket_handler handler) {
+		asio::post(*_state->exec, handle_connections(_state, handler));
+	}
+
 private:
+	using executor_ptr = managed_ptr<context, executor>;
+
 	struct state {
-		managed_ptr<context, executor> exec;
+		executor_ptr exec;
 		tcp::acceptor acceptor;
 		std::atomic<bool> stopped = false;
 
@@ -98,14 +90,12 @@ private:
 
 	using state_ptr = std::shared_ptr<state>;
 
-	template <typename handler_type>
-	static awaitable<void> accept_connections(state_ptr shared_state,
-											  handler_type handler) {
+	template <typename socket_handler>
+	static coroutine::returning<void, std::suspend_always>
+	handle_connections(state_ptr shared_state, socket_handler handler) {
 		while (!shared_state->stopped) {
-			tcp::socket socket = co_await shared_state->acceptor.async_accept(
-				asio::make_strand(*shared_state->exec), asio::use_awaitable);
-			asio::co_spawn(*shared_state->exec, handler(socket),
-						   asio::detached);
+			accept_result socket_or = co_await shared_state->accept();
+			asio::post(*shared_state->exec, handler(socket_or));
 		}
 	}
 
