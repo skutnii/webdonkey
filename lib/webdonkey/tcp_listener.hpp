@@ -26,8 +26,9 @@
 namespace webdonkey {
 
 using accept_result = std::expected<socket_ptr, boost::system::error_code>;
-using socket_acceptor = coroutine::yielding<accept_result, std::suspend_always,
-											coroutine::value_storage::copy>;
+using socket_acceptor =
+	coroutine::yielding<accept_result, std::suspend_always,
+						coroutine::continuation_flavor::copy>;
 
 template <class context, class executor> class tcp_listener {
 public:
@@ -63,11 +64,12 @@ private:
 		tcp::acceptor acceptor;
 		std::atomic<bool> stopped = false;
 
-		coroutine::continuation<accept_result, coroutine::value_storage::copy>
+		coroutine::continuation<accept_result,
+								coroutine::continuation_flavor::copy>
 		accept() {
 			using continuation =
 				coroutine::continuation<accept_result,
-										coroutine::value_storage::copy>;
+										coroutine::continuation_flavor::copy>;
 			continuation then;
 			acceptor.async_accept(
 				asio::make_strand(*exec),
@@ -95,7 +97,7 @@ private:
 	handle_connections(state_ptr shared_state, socket_handler handler) {
 		while (!shared_state->stopped) {
 			accept_result socket_or = co_await shared_state->accept();
-			asio::post(*shared_state->exec, handler(socket_or));
+			handler(socket_or);
 		}
 	}
 

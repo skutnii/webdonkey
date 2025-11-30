@@ -23,12 +23,13 @@
 #include <string>
 #include <webdonkey/contextual.hpp>
 #include <webdonkey/coroutines.hpp>
+#include <webdonkey/hop.hpp>
 #include <webdonkey/http.hpp>
 #include <webdonkey/static_responder.hpp>
 
 struct server_context {};
 
-using io_context = boost::asio::io_context;
+using thread_pool = boost::asio::thread_pool;
 
 class simple_server {
 public:
@@ -37,7 +38,7 @@ public:
 
 	static std::string version() { return "webdonkey HTTP example"; }
 
-	webdonkey::coroutine::returning<void, std::suspend_always>
+	webdonkey::coroutine::returning<void, std::suspend_never>
 	serve(webdonkey::accept_result socket_or) {
 		using namespace webdonkey;
 		try {
@@ -47,9 +48,16 @@ public:
 				co_return;
 			}
 
-			auto next_req = http(*socket_or.value());
+			auto request_gen = http(*socket_or.value());
+
+			std::cout << "Serving on thread: " << std::this_thread::get_id()
+					  << std::endl;
+			// Possibly switch to a new thread
+			co_await coroutine::hop(*_executor);
+			std::cout << "Resuming on thread: " << std::this_thread::get_id()
+					  << std::endl;
 			while (std::optional<expected_request<tcp_stream>> request_or =
-					   co_await next_req) {
+					   co_await request_gen) {
 				if (!request_or->has_value()) {
 					std::cerr << request_or->error().message() + "\n";
 					continue;
@@ -92,6 +100,7 @@ public:
 
 private:
 	webdonkey::static_responder _respond;
+	webdonkey::managed_ptr<server_context, thread_pool> _executor;
 };
 
 //==============================================================================
@@ -107,24 +116,20 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 
-	shared_object<server_context, io_context> io_ctx{
-		std::make_shared<io_context>(1)};
+	shared_object<server_context, thread_pool> shared_pool{
+		std::make_shared<thread_pool>(8)};
 
 	auto srv = std::make_shared<simple_server>(argv[1]);
 	auto const address = boost::asio::ip::make_address("0.0.0.0");
 	boost::asio::ip::tcp::endpoint http_endpoint{address, 80};
-	tcp_listener<server_context, io_context> http_listener{
+	tcp_listener<server_context, thread_pool> http_listener{
 		http_endpoint,
 		[srv](accept_result socket_or)
-			-> coroutine::returning<void, std::suspend_always> {
+			-> coroutine::returning<void, std::suspend_never> {
 			return srv->serve(socket_or);
 		}};
 
-	std::vector<std::thread> threads;
-	threads.reserve(7);
-	for (unsigned int i = 0; i < 7; ++i)
-		threads.emplace_back([&]() { io_ctx->run(); });
-	io_ctx->run();
+	shared_pool->join();
 
 	return 0;
 }

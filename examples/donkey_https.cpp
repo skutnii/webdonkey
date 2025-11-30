@@ -22,6 +22,7 @@
 #include <iostream>
 #include <sstream>
 #include <webdonkey/contextual.hpp>
+#include <webdonkey/hop.hpp>
 #include <webdonkey/http.hpp>
 #include <webdonkey/static_responder.hpp>
 
@@ -35,15 +36,16 @@ public:
 
 	static std::string version() { return "webdonkey HTTP example"; }
 
-	webdonkey::coroutine::returning<void, std::suspend_always>
+	webdonkey::coroutine::returning<void, std::suspend_never>
 	serve_content(webdonkey::accept_result socket_or);
 
-	webdonkey::coroutine::returning<void, std::suspend_always>
+	webdonkey::coroutine::returning<void, std::suspend_never>
 	redirect(webdonkey::accept_result socket_or);
 
 private:
 	webdonkey::ssl::context _ssl_ctx;
 	webdonkey::static_responder _respond;
+	webdonkey::managed_ptr<server_context, thread_pool> _executor;
 };
 
 //==============================================================================
@@ -145,7 +147,7 @@ secure_server::secure_server(const char *doc_root) :
 
 //=============================================================================-
 
-webdonkey::coroutine::returning<void, std::suspend_always>
+webdonkey::coroutine::returning<void, std::suspend_never>
 secure_server::serve_content(webdonkey::accept_result socket_or) {
 	using namespace webdonkey;
 	if (!socket_or.has_value()) {
@@ -155,6 +157,9 @@ secure_server::serve_content(webdonkey::accept_result socket_or) {
 	}
 
 	auto request_gen = https(*socket_or.value(), _ssl_ctx);
+
+	coroutine::hop(*_executor);
+
 	while (std::optional<expected_request<ssl_stream>> request_or =
 			   co_await request_gen) {
 		if (!request_or->has_value()) {
@@ -189,7 +194,7 @@ secure_server::serve_content(webdonkey::accept_result socket_or) {
 
 //=============================================================================-
 
-webdonkey::coroutine::returning<void, std::suspend_always>
+webdonkey::coroutine::returning<void, std::suspend_never>
 secure_server::redirect(webdonkey::accept_result socket_or) {
 	using namespace webdonkey;
 	if (!socket_or.has_value()) {
@@ -199,6 +204,8 @@ secure_server::redirect(webdonkey::accept_result socket_or) {
 	}
 
 	auto request_gen = http(*socket_or.value());
+	coroutine::hop(*_executor);
+
 	while (std::optional<expected_request<tcp_stream>> request_or =
 			   co_await request_gen) {
 		if (!request_or->has_value()) {
@@ -253,7 +260,7 @@ int main(int argc, char **argv) {
 	tcp_listener<server_context, thread_pool> https_listener{
 		https_endpoint,
 		[srv](const accept_result &socket_or)
-			-> coroutine::returning<void, std::suspend_always> {
+			-> coroutine::returning<void, std::suspend_never> {
 			return srv->serve_content(socket_or);
 		}};
 
@@ -261,7 +268,7 @@ int main(int argc, char **argv) {
 	tcp_listener<server_context, thread_pool> http_listener{
 		http_endpoint,
 		[srv](const accept_result &socket_or)
-			-> coroutine::returning<void, std::suspend_always> {
+			-> coroutine::returning<void, std::suspend_never> {
 			return srv->redirect(socket_or);
 		}};
 

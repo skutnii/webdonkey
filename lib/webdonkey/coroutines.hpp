@@ -33,14 +33,13 @@ concept suspend = requires {
  * with void return type.
  */
 template <typename yield_type, suspend init_suspend,
-		  value_storage value_storage_type =
+		  continuation_flavor flavor =
 			  continuation_storage_type<std::optional<yield_type>>()>
 class yielding {
 public:
-	using self = yielding<yield_type, init_suspend, value_storage_type>;
+	using self = yielding<yield_type, init_suspend, flavor>;
 	using result_type = std::optional<yield_type>;
-	using yield_continuation =
-		continuation<std::optional<yield_type>, value_storage_type>;
+	using yield_continuation = continuation<std::optional<yield_type>, flavor>;
 
 	struct promise_type;
 	using handle_type = std::coroutine_handle<promise_type>;
@@ -111,12 +110,11 @@ private:
  * A coroutine that returns a value with co_return but does not use co_yield.
  */
 template <typename return_type, suspend init_suspend,
-		  value_storage value_storage_type =
-			  continuation_storage_type<return_type>()>
+		  continuation_flavor flavor = continuation_storage_type<return_type>()>
 class returning {
 public:
-	using self = returning<return_type, init_suspend, value_storage_type>;
-	using return_continuation = continuation<return_type, value_storage_type>;
+	using self = returning<return_type, init_suspend, flavor>;
+	using return_continuation = continuation<return_type, flavor>;
 
 	struct promise_type;
 	using handle_type = std::coroutine_handle<promise_type>;
@@ -226,18 +224,18 @@ public:
  * A coroutine that can both yield and return.
  */
 template <typename yield_type, typename return_type, suspend init_suspend,
-		  value_storage yield_storage_type =
+		  continuation_flavor yield_flavor =
 			  continuation_storage_type<std::optional<yield_type>>(),
-		  value_storage return_storage_type =
+		  continuation_flavor return_flavor =
 			  continuation_storage_type<return_type>()>
 class combined {
 public:
-	using self = combined<yield_type, return_type, init_suspend,
-						  yield_storage_type, return_storage_type>;
+	using self = combined<yield_type, return_type, init_suspend, yield_flavor,
+						  return_flavor>;
 	using yield_continuation =
-		continuation<std::optional<yield_type>, yield_storage_type>;
+		continuation<std::optional<yield_type>, yield_flavor>;
 	using yield_result_type = std::optional<yield_type>;
-	using return_continuation = continuation<return_type, return_storage_type>;
+	using return_continuation = continuation<return_type, return_flavor>;
 
 	struct promise_type;
 	using handle_type = std::coroutine_handle<promise_type>;

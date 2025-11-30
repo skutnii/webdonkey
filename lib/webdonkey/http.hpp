@@ -52,10 +52,11 @@ public:
 
 	using io_result = std::expected<size_t, boost::system::error_code>;
 
-	coroutine::continuation<io_result, coroutine::value_storage::copy>
+	coroutine::continuation<io_result, coroutine::continuation_flavor::copy>
 	read_header() {
 		using continuation =
-			coroutine::continuation<io_result, coroutine::value_storage::copy>;
+			coroutine::continuation<io_result,
+									coroutine::continuation_flavor::copy>;
 		continuation then;
 		beast::http::async_read_header(
 			*_stream, _buffer, _parser,
@@ -70,10 +71,11 @@ public:
 		return then;
 	}
 
-	coroutine::continuation<io_result, coroutine::value_storage::copy>
+	coroutine::continuation<io_result, coroutine::continuation_flavor::copy>
 	write(response_generator &gen) {
 		using continuation =
-			coroutine::continuation<io_result, coroutine::value_storage::copy>;
+			coroutine::continuation<io_result,
+									coroutine::continuation_flavor::copy>;
 		continuation then;
 		beast::async_write(
 			*_stream, std::move(gen),
@@ -89,10 +91,11 @@ public:
 	}
 
 	template <class body>
-	coroutine::continuation<io_result, coroutine::value_storage::copy>
+	coroutine::continuation<io_result, coroutine::continuation_flavor::copy>
 	write(beast::http::response<body> &res) {
 		using continuation =
-			coroutine::continuation<io_result, coroutine::value_storage::copy>;
+			coroutine::continuation<io_result,
+									coroutine::continuation_flavor::copy>;
 		continuation then;
 		beast::http::async_write(
 			*_stream, res,
@@ -144,7 +147,7 @@ using expected_request = std::expected<request_context_ptr<socket_stream>,
 
 template <class socket_stream>
 coroutine::yielding<expected_request<socket_stream>, std::suspend_always,
-					coroutine::value_storage::copy>
+					coroutine::continuation_flavor::copy>
 accept_requests(std::shared_ptr<socket_stream> stream) {
 	for (;;) {
 		using context = request_context<socket_stream>;
@@ -168,14 +171,14 @@ accept_requests(std::shared_ptr<socket_stream> stream) {
 
 inline static coroutine::yielding<expected_request<tcp_stream>,
 								  std::suspend_always,
-								  coroutine::value_storage::copy>
+								  coroutine::continuation_flavor::copy>
 http(tcp::socket &socket) {
 	return accept_requests(std::make_shared<tcp_stream>(std::move(socket)));
 }
 
 inline static coroutine::yielding<expected_request<ssl_stream>,
 								  std::suspend_always,
-								  coroutine::value_storage::copy>
+								  coroutine::continuation_flavor::copy>
 https(tcp::socket &socket, ssl::context &ssl_ctx) {
 	std::shared_ptr<ssl_stream> stream =
 		std::make_shared<ssl_stream>(std::move(socket), ssl_ctx);
@@ -183,7 +186,7 @@ https(tcp::socket &socket, ssl::context &ssl_ctx) {
 	defer shutdown{[stream]() { stream->shutdown(); }};
 
 	coroutine::yielding<expected_request<ssl_stream>, std::suspend_always,
-						coroutine::value_storage::copy>
+						coroutine::continuation_flavor::copy>
 		request_gen = accept_requests(stream);
 
 	while (auto maybe_request = co_await request_gen)
