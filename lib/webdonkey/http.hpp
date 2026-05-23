@@ -170,15 +170,15 @@ accept_requests(std::shared_ptr<socket_stream> stream) {
 
 inline static coroutine::yielding<expected_request<tcp_stream>,
 								  std::suspend_always>
-http(tcp::socket &socket) {
-	return accept_requests(std::make_shared<tcp_stream>(std::move(socket)));
+http(tcp::socket &&socket) {
+	return accept_requests(std::make_shared<tcp_stream>(std::forward<tcp::socket>(socket)));
 }
 
 inline static coroutine::yielding<expected_request<ssl_stream>,
 								  std::suspend_always>
-https(tcp::socket &socket, ssl::context &ssl_ctx) {
+https(tcp::socket &&socket, ssl::context &ssl_ctx) {
 	std::shared_ptr<ssl_stream> stream =
-		std::make_shared<ssl_stream>(std::move(socket), ssl_ctx);
+		std::make_shared<ssl_stream>(std::forward<tcp::socket>(socket), ssl_ctx);
 	stream->handshake(ssl::stream_base::server);
 	defer shutdown{[stream]() { stream->shutdown(); }};
 

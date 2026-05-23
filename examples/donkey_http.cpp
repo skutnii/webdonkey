@@ -38,7 +38,7 @@ public:
 	static std::string version() { return "webdonkey HTTP example"; }
 
 	webdonkey::coroutine::returning<void, std::suspend_never>
-	serve(webdonkey::accept_result socket_or) {
+	serve(webdonkey::accept_result &&socket_or) {
 		using namespace webdonkey;
 		try {
 			if (!socket_or.has_value()) {
@@ -47,7 +47,7 @@ public:
 				co_return;
 			}
 
-			auto next_request = http(*socket_or.value());
+			auto next_request = http(std::move(socket_or.value()));
 
 			// Possibly switch to a new thread
 			co_await coroutine::hop(*_executor);
@@ -125,9 +125,9 @@ int main(int argc, char **argv) {
 	boost::asio::ip::tcp::endpoint http_endpoint{address, 80};
 	tcp_listener<server_context, thread_pool> http_listener{
 		http_endpoint,
-		[srv](accept_result socket_or)
+		[srv](accept_result &&socket_or)
 			-> coroutine::returning<void, std::suspend_never> {
-			return srv->serve(socket_or);
+			return srv->serve(std::forward<accept_result>(socket_or));
 		}};
 
 	shared_pool->join();

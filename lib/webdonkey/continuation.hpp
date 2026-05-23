@@ -19,11 +19,11 @@ namespace webdonkey {
 
 namespace coroutine {
 
-enum class continuation_flavor { pointer, copy, blocking };
+enum class continuation_flavor { reference, copy, blocking };
 
 template <typename value_type>
 inline static constexpr continuation_flavor continuation_storage_type() {
-	return continuation_flavor::pointer;
+	return continuation_flavor::reference;
 }
 
 template <>
@@ -41,7 +41,7 @@ template <typename value_type, continuation_flavor storage_strategy =
 class continuation;
 
 template <typename value_type>
-class continuation<value_type, continuation_flavor::pointer> {
+class continuation<value_type, continuation_flavor::reference> {
 public:
 	bool await_ready() {
 		std::lock_guard<std::recursive_mutex> access_lock(
@@ -64,7 +64,7 @@ public:
 			_state->_suspend();
 	}
 
-	value_type await_resume() {
+	value_type &await_resume() {
 		std::lock_guard<std::recursive_mutex> access_lock(
 			_state->_access_mutex);
 		if (_state->_exception) {
@@ -74,7 +74,7 @@ public:
 		}
 
 		if (_state->_short_lived_value) {
-			const value_type *val = _state->_short_lived_value;
+			value_type *val = _state->_short_lived_value;
 			_state->_short_lived_value = nullptr;
 			return *val;
 		}
@@ -102,6 +102,18 @@ public:
 		}
 	}
 
+	void operator()(value_type &&val) {
+		std::lock_guard<std::recursive_mutex> access_lock(
+			_state->_access_mutex);
+		if (_state->resumable()) {
+			_state->_short_lived_value = &val;
+			pop_resume();
+		} else {
+			_state->_long_lived_value =
+				std::make_unique<value_type>(std::forward<value_type>(val));
+		}
+	}
+
 	void operator()(std::exception_ptr exception) {
 		std::lock_guard<std::recursive_mutex> access_lock(
 			_state->_access_mutex);
@@ -118,7 +130,7 @@ private:
 	}
 
 	struct state {
-		const value_type *_short_lived_value = nullptr;
+		value_type *_short_lived_value = nullptr;
 		std::unique_ptr<value_type> _long_lived_value;
 		std::exception_ptr _exception;
 		std::function<void()> _resume;

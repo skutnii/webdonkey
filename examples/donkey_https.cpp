@@ -36,10 +36,10 @@ public:
 	static std::string version() { return "webdonkey HTTP example"; }
 
 	webdonkey::coroutine::returning<void, std::suspend_never>
-	serve_content(webdonkey::accept_result socket_or);
+	serve_content(webdonkey::accept_result &&socket_or);
 
 	webdonkey::coroutine::returning<void, std::suspend_never>
-	redirect(webdonkey::accept_result socket_or);
+	redirect(webdonkey::accept_result &&socket_or);
 
 private:
 	webdonkey::ssl::context _ssl_ctx;
@@ -147,7 +147,7 @@ secure_server::secure_server(const char *doc_root) :
 //=============================================================================-
 
 webdonkey::coroutine::returning<void, std::suspend_never>
-secure_server::serve_content(webdonkey::accept_result socket_or) {
+secure_server::serve_content(webdonkey::accept_result &&socket_or) {
 	using namespace webdonkey;
 	try {
 		if (!socket_or.has_value()) {
@@ -156,7 +156,7 @@ secure_server::serve_content(webdonkey::accept_result socket_or) {
 			co_return;
 		}
 
-		auto next_request = https(*socket_or.value(), _ssl_ctx);
+		auto next_request = https(std::move(socket_or.value()), _ssl_ctx);
 
 		coroutine::hop(*_executor);
 
@@ -207,7 +207,7 @@ secure_server::serve_content(webdonkey::accept_result socket_or) {
 //=============================================================================-
 
 webdonkey::coroutine::returning<void, std::suspend_never>
-secure_server::redirect(webdonkey::accept_result socket_or) {
+secure_server::redirect(webdonkey::accept_result &&socket_or) {
 	using namespace webdonkey;
 	try {
 		if (!socket_or.has_value()) {
@@ -216,7 +216,7 @@ secure_server::redirect(webdonkey::accept_result socket_or) {
 			co_return;
 		}
 
-		auto next_request = http(*socket_or.value());
+		auto next_request = http(std::move(socket_or.value()));
 		coroutine::hop(*_executor);
 
 		while (co_await next_request) {
@@ -285,17 +285,17 @@ int main(int argc, char **argv) {
 	boost::asio::ip::tcp::endpoint https_endpoint{address, 443};
 	tcp_listener<server_context, thread_pool> https_listener{
 		https_endpoint,
-		[srv](const accept_result &socket_or)
+		[srv](accept_result &&socket_or)
 			-> coroutine::returning<void, std::suspend_never> {
-			return srv->serve_content(socket_or);
+			return srv->serve_content(std::forward<accept_result>(socket_or));
 		}};
 
 	boost::asio::ip::tcp::endpoint http_endpoint{address, 80};
 	tcp_listener<server_context, thread_pool> http_listener{
 		http_endpoint,
-		[srv](const accept_result &socket_or)
+		[srv](accept_result &&socket_or)
 			-> coroutine::returning<void, std::suspend_never> {
-			return srv->redirect(socket_or);
+			return srv->redirect(std::forward<accept_result>(socket_or));
 		}};
 
 	shared_pool->join();

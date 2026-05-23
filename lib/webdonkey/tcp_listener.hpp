@@ -25,7 +25,7 @@
 
 namespace webdonkey {
 
-using accept_result = std::expected<socket_ptr, boost::system::error_code>;
+using accept_result = std::expected<tcp::socket, boost::system::error_code>;
 using socket_acceptor = coroutine::yielding<accept_result, std::suspend_always>;
 
 template <class context, class executor> class tcp_listener {
@@ -57,11 +57,11 @@ private:
 		std::atomic<bool> stopped = false;
 
 		coroutine::continuation<accept_result,
-								coroutine::continuation_flavor::copy>
+								coroutine::continuation_flavor::reference>
 		accept() {
 			using continuation =
 				coroutine::continuation<accept_result,
-										coroutine::continuation_flavor::copy>;
+										coroutine::continuation_flavor::reference>;
 			continuation then;
 			acceptor.async_accept(
 				asio::make_strand(*exec),
@@ -69,10 +69,9 @@ private:
 					   boost::asio::ip::tcp::socket peer) {
 					if (error)
 						const_cast<continuation &>(then)(
-							std::unexpected{error});
+							accept_result{std::unexpected{error}});
 					else
-						const_cast<continuation &>(then)(
-							std::make_shared<tcp::socket>(std::move(peer)));
+						const_cast<continuation &>(then)(accept_result{std::move(peer)});
 				});
 
 			return then;
@@ -88,8 +87,7 @@ private:
 	static coroutine::returning<void, std::suspend_always>
 	handle_connections(state_ptr shared_state, socket_handler handler) {
 		while (!shared_state->stopped) {
-			accept_result socket_or = co_await shared_state->accept();
-			handler(socket_or);
+			handler(std::move(co_await shared_state->accept()));
 		}
 	}
 
