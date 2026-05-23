@@ -5,7 +5,6 @@
  *      Author: Sergii Kutnii
  */
 
-#include "webdonkey/defs.hpp"
 #include "webdonkey/tcp_listener.hpp"
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/detached.hpp>
