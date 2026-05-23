@@ -88,7 +88,7 @@ static_responder::operator()(request_context<socket_stream> &r_context,
 		res.set(beast::http::field::content_type, mime_type(file_path));
 		res.content_length(size);
 		res.keep_alive(req.keep_alive());
-		return std::make_shared<response_generator>(std::move(res));
+		return response_generator{std::move(res)};
 	} else {
 		// Respond to GET request
 		beast::http::response<beast::http::file_body> res{
@@ -98,7 +98,7 @@ static_responder::operator()(request_context<socket_stream> &r_context,
 		res.set(beast::http::field::content_type, mime_type(file_path));
 		res.content_length(size);
 		res.keep_alive(req.keep_alive());
-		return std::make_shared<response_generator>(std::move(res));
+		return response_generator{std::move(res)};
 	}
 }
 

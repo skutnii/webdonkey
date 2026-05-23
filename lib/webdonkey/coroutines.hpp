@@ -33,17 +33,19 @@ concept suspend = requires {
  * A coroutine that `co_yield`s a sequence of values
  * with void return type.
  */
-template <typename yield_type, suspend init_suspend> class yielding {
+template <typename yield_type, suspend init_suspend> 
+class yielding {
 public:
 	using self = yielding<yield_type, init_suspend>;
-	using yield_continuation = continuation<bool, continuation_flavor::copy>;
+	using yielded = std::optional<yield_type>;
+	using yield_continuation = continuation<yielded, 
+																					continuation_flavor::reference>;
 
 	struct promise_type;
 	using handle_type = std::coroutine_handle<promise_type>;
 
 	struct promise_type {
 		yield_continuation _yield;
-		std::unique_ptr<yield_type> _value;
 		std::recursive_mutex _mutex;
 		bool _returned = false;
 
@@ -62,24 +64,21 @@ public:
 
 		std::suspend_always yield_value(yield_type &&from) {
 			std::lock_guard<std::recursive_mutex> state_lock{_mutex};
-			_value = std::make_unique<yield_type>(
-				std::forward<decltype(from)>(from));
-			_yield(true);
+			_yield(
+				yielded{std::forward<decltype(from)>(from)});
 			return {};
 		}
 
 		std::suspend_always yield_value(const yield_type &from) {
 			std::lock_guard<std::recursive_mutex> state_lock{_mutex};
-			_value = std::make_unique<yield_type>(std::move(from));
-			_yield(true);
+			_yield(from);
 			return {};
 		}
 
 		void return_void() {
 			std::lock_guard<std::recursive_mutex> state_lock{_mutex};
-			_value.reset();
 			_returned = true;
-			_yield(false);
+			_yield(yielded{});
 		}
 	};
 
@@ -103,10 +102,6 @@ public:
 
 		return promise()._yield;
 	}
-
-	yield_type &get() const { return *_handle.promise()._value.get(); }
-	yield_type &operator*() const { return get(); }
-	yield_type *operator->() const { return _handle.promise()._value.get(); }
 
 private:
 	handle_type _handle;

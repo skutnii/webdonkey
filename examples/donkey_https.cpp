@@ -41,6 +41,15 @@ public:
 	webdonkey::coroutine::returning<void, std::suspend_never>
 	redirect(webdonkey::accept_result &&socket_or);
 
+	template<typename socket_stream, typename response_type>
+	webdonkey::coroutine::returning<void, std::suspend_always>
+	write_response(webdonkey::request_context<socket_stream> &ctx, 
+									response_type &response) {
+		auto status = co_await ctx.write(response);
+		if (!status.has_value())
+			std::cerr << status.error().message() + "\n";
+	}
+
 private:
 	webdonkey::ssl::context _ssl_ctx;
 	webdonkey::static_responder _respond;
@@ -160,19 +169,19 @@ secure_server::serve_content(webdonkey::accept_result &&socket_or) {
 
 		coroutine::hop(*_executor);
 
-		while (co_await next_request) {
-			if (!next_request->has_value()) {
-				std::cerr << next_request->error().message() + "\n";
+		while (auto request_or = co_await next_request) {
+			if (!request_or->has_value()) {
+				std::cerr << request_or->error().message() + "\n";
 				continue;
 			}
 
-			request_context_ptr ctx = next_request->value();
+			request_context_ptr ctx = request_or->value();
 			std::cout << "Serving " + ctx->method_string() + " " +
 							 ctx->target() + "\n";
 			expected_response response_or = _respond(*ctx, ctx->target());
 			response_ptr response{nullptr};
 			if (response_or.has_value())
-				response = response_or.value();
+				co_await write_response(*ctx, response_or.value());
 			else {
 				std::cerr << "[HTTP error] " + response_or.error().message +
 								 "\n";
@@ -183,12 +192,8 @@ secure_server::serve_content(webdonkey::accept_result &&socket_or) {
 				res.keep_alive(ctx->request().keep_alive());
 				res.body() = response_or.error().message;
 				res.prepare_payload();
-				response = std::make_shared<response_generator>(std::move(res));
+				co_await write_response(*ctx, res);
 			}
-
-			auto status = co_await ctx->write(*response);
-			if (!status.has_value())
-				std::cerr << status.error().message() + "\n";
 		}
 	} catch (boost::system::system_error &err) {
 		if (err.code() == beast::http::error::end_of_stream)
@@ -219,13 +224,13 @@ secure_server::redirect(webdonkey::accept_result &&socket_or) {
 		auto next_request = http(std::move(socket_or.value()));
 		coroutine::hop(*_executor);
 
-		while (co_await next_request) {
-			if (!next_request->has_value()) {
-				std::cerr << next_request->error().message() + "\n";
+		while (auto request_or = co_await next_request) {
+			if (!request_or->has_value()) {
+				std::cerr << request_or->error().message() + "\n";
 				continue;
 			}
 
-			request_context_ptr ctx = next_request->value();
+			request_context_ptr ctx = request_or->value();
 			beast::http::response<beast::http::empty_body> res{
 				beast::http::status::moved_permanently,
 				ctx->request().version()};

@@ -146,7 +146,8 @@ using expected_request = std::expected<request_context_ptr<socket_stream>,
 									   boost::system::error_code>;
 
 template <class socket_stream>
-coroutine::yielding<expected_request<socket_stream>, std::suspend_always>
+coroutine::yielding<expected_request<socket_stream>, 
+										std::suspend_always>
 accept_requests(std::shared_ptr<socket_stream> stream) {
 	for (;;) {
 		using context = request_context<socket_stream>;
@@ -175,18 +176,19 @@ http(tcp::socket &&socket) {
 }
 
 inline static coroutine::yielding<expected_request<ssl_stream>,
-								  std::suspend_always>
+								  								std::suspend_always>
 https(tcp::socket &&socket, ssl::context &ssl_ctx) {
 	std::shared_ptr<ssl_stream> stream =
 		std::make_shared<ssl_stream>(std::forward<tcp::socket>(socket), ssl_ctx);
 	stream->handshake(ssl::stream_base::server);
 	defer shutdown{[stream]() { stream->shutdown(); }};
 
-	coroutine::yielding<expected_request<ssl_stream>, std::suspend_always>
+	coroutine::yielding<expected_request<ssl_stream>, 
+											std::suspend_always>
 		next_request = accept_requests(stream);
 
-	while (co_await next_request)
-		co_yield *next_request;
+	while (auto request_or = co_await next_request)
+		co_yield std::move(request_or.value());
 }
 
 struct protocol_error {
@@ -200,7 +202,7 @@ struct protocol_error {
 	bool recoverable = true;
 };
 
-using expected_response = std::expected<response_ptr, protocol_error>;
+using expected_response = std::expected<response_generator, protocol_error>;
 
 template <typename server_type, class socket_stream>
 concept responder = requires {

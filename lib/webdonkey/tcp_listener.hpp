@@ -26,7 +26,6 @@
 namespace webdonkey {
 
 using accept_result = std::expected<tcp::socket, boost::system::error_code>;
-using socket_acceptor = coroutine::yielding<accept_result, std::suspend_always>;
 
 template <class context, class executor> class tcp_listener {
 public:
