@@ -16,6 +16,7 @@
 #include <boost/system/detail/error_code.hpp>
 #include <coroutine>
 #include <expected>
+#include <functional>
 #include <regex>
 #include <webdonkey/coroutines.hpp>
 #include <webdonkey/utils.hpp>
@@ -32,7 +33,7 @@ template <class socket_stream> class request_context {
 public:
 	using stream_ptr = std::shared_ptr<socket_stream>;
 
-	request_context(const stream_ptr &s) :
+	request_context(socket_stream &s) :
 		_stream{s} {};
 
 	request_context(const request_context<socket_stream> &) = delete;
@@ -59,7 +60,7 @@ public:
 									coroutine::continuation_flavor::copy>;
 		continuation then;
 		beast::http::async_read_header(
-			*_stream, _buffer, _parser,
+			_stream, _buffer, _parser,
 			[then](
 				boost::system::error_code const &error, // result of operation
 				std::size_t bytes_transferred) {
@@ -78,7 +79,7 @@ public:
 									coroutine::continuation_flavor::copy>;
 		continuation then;
 		beast::async_write(
-			*_stream, std::move(gen),
+			_stream, std::move(gen),
 			[then](
 				boost::system::error_code const &error, // result of operation
 				std::size_t bytes_transferred) {
@@ -98,7 +99,7 @@ public:
 									coroutine::continuation_flavor::copy>;
 		continuation then;
 		beast::http::async_write(
-			*_stream, res,
+			_stream, res,
 			[then](
 				boost::system::error_code const &error, // result of operation
 				std::size_t bytes_transferred) {
@@ -129,31 +130,32 @@ public:
 		return beast::http::to_string(request().method());
 	}
 
-	response_ptr response;
-
 private:
 	std::optional<bool> _force_keep_alive;
-	stream_ptr _stream;
+	socket_stream &_stream;
 	request_buffer _buffer;
 	request_parser _parser;
 };
 
-template <class socket_stream>
-using request_context_ptr = std::shared_ptr<request_context<socket_stream>>;
+using http_context = request_context<tcp_stream>;
+using https_context = request_context<ssl_stream>;
 
 template <class socket_stream>
-using expected_request = std::expected<request_context_ptr<socket_stream>,
+using context_wrapper = std::reference_wrapper<request_context<socket_stream>>;
+
+template <class socket_stream>
+using expected_request = std::expected<context_wrapper<socket_stream>,
 									   boost::system::error_code>;
 
 template <class socket_stream>
 coroutine::yielding<expected_request<socket_stream>, 
-										std::suspend_always>
-accept_requests(std::shared_ptr<socket_stream> stream) {
+										std::suspend_always, 
+										coroutine::continuation_flavor::copy>
+accept_requests(socket_stream &stream) {
 	for (;;) {
 		using context = request_context<socket_stream>;
-		request_context_ptr<socket_stream> ctx =
-			std::make_shared<context>(stream);
-		typename context::io_result status = co_await ctx->read_header();
+		context ctx{stream};
+		typename context::io_result status = co_await ctx.read_header();
 		if (!status.has_value()) {
 			if ((status.error() != beast::http::error::end_of_stream) &&
 				(status.error() != beast::http::error::partial_message))
@@ -162,33 +164,36 @@ accept_requests(std::shared_ptr<socket_stream> stream) {
 			break;
 		}
 
-		co_yield ctx;
+		co_yield std::ref(ctx);
 
-		if (!ctx->keep_alive())
+		if (!ctx.keep_alive())
 			break;
 	}
 }
 
 inline static coroutine::yielding<expected_request<tcp_stream>,
-								  std::suspend_always>
-http(tcp::socket &&socket) {
-	return accept_requests(std::make_shared<tcp_stream>(std::forward<tcp::socket>(socket)));
+								  std::suspend_always, 
+									coroutine::continuation_flavor::copy>
+http(tcp::socket socket) {
+	tcp_stream stream{std::move(socket)};
+	auto next_request = accept_requests(stream);
+
+	while (auto request_or = co_await next_request)
+		co_yield request_or.value();
 }
 
 inline static coroutine::yielding<expected_request<ssl_stream>,
-								  								std::suspend_always>
-https(tcp::socket &&socket, ssl::context &ssl_ctx) {
-	std::shared_ptr<ssl_stream> stream =
-		std::make_shared<ssl_stream>(std::forward<tcp::socket>(socket), ssl_ctx);
-	stream->handshake(ssl::stream_base::server);
-	defer shutdown{[stream]() { stream->shutdown(); }};
+								  								std::suspend_always, 
+																	coroutine::continuation_flavor::copy>
+https(tcp::socket socket, ssl::context &ssl_ctx) {
+	ssl_stream stream{std::move(socket), ssl_ctx};
+	stream.handshake(ssl::stream_base::server);
+	defer shutdown{[&stream]() { stream.shutdown(); }};
 
-	coroutine::yielding<expected_request<ssl_stream>, 
-											std::suspend_always>
-		next_request = accept_requests(stream);
+	auto next_request = accept_requests(stream);
 
 	while (auto request_or = co_await next_request)
-		co_yield std::move(request_or.value());
+		co_yield request_or.value();
 }
 
 struct protocol_error {

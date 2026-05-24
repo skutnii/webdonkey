@@ -56,21 +56,20 @@ private:
 		std::atomic<bool> stopped = false;
 
 		coroutine::continuation<accept_result,
-								coroutine::continuation_flavor::reference>
+								coroutine::continuation_flavor::move>
 		accept() {
 			using continuation =
 				coroutine::continuation<accept_result,
-										coroutine::continuation_flavor::reference>;
+										coroutine::continuation_flavor::move>;
 			continuation then;
 			acceptor.async_accept(
 				asio::make_strand(*exec),
-				[then](const boost::system::error_code &error,
-					   boost::asio::ip::tcp::socket peer) {
+				[then](const boost::system::error_code &error,  tcp::socket peer) {
 					if (error)
-						const_cast<continuation &>(then)(
-							accept_result{std::unexpected{error}});
+						const_cast<continuation &>(then)(std::unexpected{error});
 					else
-						const_cast<continuation &>(then)(accept_result{std::move(peer)});
+						const_cast<continuation &>(then)(
+							std::move(peer));
 				});
 
 			return then;
@@ -86,7 +85,7 @@ private:
 	static coroutine::returning<void, std::suspend_always>
 	handle_connections(state_ptr shared_state, socket_handler handler) {
 		while (!shared_state->stopped) {
-			handler(std::move(co_await shared_state->accept()));
+			handler(co_await shared_state->accept());
 		}
 	}
 

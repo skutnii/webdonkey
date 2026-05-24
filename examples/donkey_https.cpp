@@ -36,10 +36,10 @@ public:
 	static std::string version() { return "webdonkey HTTP example"; }
 
 	webdonkey::coroutine::returning<void, std::suspend_never>
-	serve_content(webdonkey::accept_result &&socket_or);
+	serve_content(webdonkey::accept_result socket_or);
 
 	webdonkey::coroutine::returning<void, std::suspend_never>
-	redirect(webdonkey::accept_result &&socket_or);
+	redirect(webdonkey::accept_result socket_or);
 
 	template<typename socket_stream, typename response_type>
 	webdonkey::coroutine::returning<void, std::suspend_always>
@@ -156,7 +156,7 @@ secure_server::secure_server(const char *doc_root) :
 //=============================================================================-
 
 webdonkey::coroutine::returning<void, std::suspend_never>
-secure_server::serve_content(webdonkey::accept_result &&socket_or) {
+secure_server::serve_content(webdonkey::accept_result socket_or) {
 	using namespace webdonkey;
 	try {
 		if (!socket_or.has_value()) {
@@ -175,24 +175,23 @@ secure_server::serve_content(webdonkey::accept_result &&socket_or) {
 				continue;
 			}
 
-			request_context_ptr ctx = request_or->value();
-			std::cout << "Serving " + ctx->method_string() + " " +
-							 ctx->target() + "\n";
-			expected_response response_or = _respond(*ctx, ctx->target());
-			response_ptr response{nullptr};
+			webdonkey::https_context& ctx = request_or->value();
+			std::cout << "Serving " + ctx.method_string() + " " +
+							 ctx.target() + "\n";
+			expected_response response_or = _respond(ctx, ctx.target());
 			if (response_or.has_value())
-				co_await write_response(*ctx, response_or.value());
+				co_await write_response(ctx, response_or.value());
 			else {
 				std::cerr << "[HTTP error] " + response_or.error().message +
 								 "\n";
 				beast::http::response<beast::http::string_body> res{
-					response_or.error().status, ctx->request().version()};
+					response_or.error().status, ctx.request().version()};
 				res.set(boost::beast::http::field::server, version());
 				res.set(boost::beast::http::field::content_type, "text/html");
-				res.keep_alive(ctx->request().keep_alive());
+				res.keep_alive(ctx.request().keep_alive());
 				res.body() = response_or.error().message;
 				res.prepare_payload();
-				co_await write_response(*ctx, res);
+				co_await write_response(ctx, res);
 			}
 		}
 	} catch (boost::system::system_error &err) {
@@ -212,7 +211,7 @@ secure_server::serve_content(webdonkey::accept_result &&socket_or) {
 //=============================================================================-
 
 webdonkey::coroutine::returning<void, std::suspend_never>
-secure_server::redirect(webdonkey::accept_result &&socket_or) {
+secure_server::redirect(webdonkey::accept_result socket_or) {
 	using namespace webdonkey;
 	try {
 		if (!socket_or.has_value()) {
@@ -230,28 +229,28 @@ secure_server::redirect(webdonkey::accept_result &&socket_or) {
 				continue;
 			}
 
-			request_context_ptr ctx = request_or->value();
+			webdonkey::http_context& ctx = request_or->value();
 			beast::http::response<beast::http::empty_body> res{
 				beast::http::status::moved_permanently,
-				ctx->request().version()};
+				ctx.request().version()};
 			res.set(boost::beast::http::field::server, version());
 			res.set(boost::beast::http::field::content_type, "text/html");
 
 			std::stringstream url_builder;
 			url_builder << "https://"
-						<< ctx->request()[beast::http::field::host]
-						<< ctx->target();
+						<< ctx.request()[beast::http::field::host]
+						<< ctx.target();
 			std::string redirect_url = url_builder.str();
 
 			std::stringstream log_stream;
-			log_stream << "Redirect " << ctx->method_string() << " "
-					   << ctx->target() << " to " << redirect_url << std::endl;
+			log_stream << "Redirect " << ctx.method_string() << " "
+					   << ctx.target() << " to " << redirect_url << std::endl;
 			std::cout << log_stream.str();
 
 			res.set(beast::http::field::location, redirect_url);
 			res.keep_alive(true);
 			res.prepare_payload();
-			auto result = co_await ctx->write(res);
+			auto result = co_await ctx.write(res);
 		}
 	} catch (boost::system::system_error &err) {
 		if (err.code() == beast::http::error::end_of_stream)

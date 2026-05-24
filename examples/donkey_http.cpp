@@ -37,7 +37,7 @@ public:
 
 	static std::string version() { return "webdonkey HTTP example"; }
 
-	using request_context = webdonkey::request_context<webdonkey::tcp_stream>;
+	using request_context = webdonkey::http_context;
 	
 	template<class response_type>
 	webdonkey::coroutine::returning<void, std::suspend_always>
@@ -50,7 +50,7 @@ public:
 	}
 
 	webdonkey::coroutine::returning<void, std::suspend_never>
-	serve(webdonkey::accept_result &&socket_or);
+	serve(webdonkey::accept_result socket_or);
 
 private:
 	webdonkey::static_responder _respond;
@@ -58,7 +58,7 @@ private:
 };
 
 webdonkey::coroutine::returning<void, std::suspend_never>
-simple_server::serve(webdonkey::accept_result &&socket_or) {
+simple_server::serve(webdonkey::accept_result socket_or) {
 	using namespace webdonkey;
 	try {
 		if (!socket_or.has_value()) {
@@ -77,25 +77,25 @@ simple_server::serve(webdonkey::accept_result &&socket_or) {
 				continue;
 			}
 
-			request_context_ptr ctx = request_or->value();
-			std::cout << "Serving " + ctx->method_string() + " " +
-							 ctx->target() + "\n";
+			request_context& ctx = request_or->value();
+			std::cout << "Serving " + ctx.method_string() + " " +
+							 ctx.target() + "\n";
 			expected_response response_or = 
-				_respond(*ctx, ctx->target());
+				_respond(ctx, ctx.target());
 			if (response_or.has_value()) {
-				co_await write_response(*ctx, response_or.value());
+				co_await write_response(ctx, response_or.value());
 			} else {
 				std::cerr
 					<< "[HTTP error] " + response_or.error().message + "\n";
 				beast::http::response<beast::http::string_body> res{
-					response_or.error().status, ctx->request().version()};
+					response_or.error().status, ctx.request().version()};
 				res.set(boost::beast::http::field::server, version());
 				res.set(boost::beast::http::field::content_type,
 						"text/html");
-				res.keep_alive(ctx->request().keep_alive());
+				res.keep_alive(ctx.request().keep_alive());
 				res.body() = response_or.error().message;
 				res.prepare_payload();
-				co_await write_response(*ctx, res);
+				co_await write_response(ctx, res);
 			}
 		}
 	} catch (boost::system::system_error &err) {

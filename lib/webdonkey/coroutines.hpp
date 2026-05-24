@@ -13,7 +13,6 @@
 #include <boost/asio/awaitable.hpp>
 #include <coroutine>
 #include <exception>
-#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -33,13 +32,13 @@ concept suspend = requires {
  * A coroutine that `co_yield`s a sequence of values
  * with void return type.
  */
-template <typename yield_type, suspend init_suspend> 
+template <typename yield_type, suspend init_suspend, 
+	continuation_flavor flavor = continuation_storage_type<yield_type>()> 
 class yielding {
 public:
-	using self = yielding<yield_type, init_suspend>;
+	using self = yielding<yield_type, init_suspend, flavor>;
 	using yielded = std::optional<yield_type>;
-	using yield_continuation = continuation<yielded, 
-																					continuation_flavor::reference>;
+	using yield_continuation = continuation<yielded, flavor>;
 
 	struct promise_type;
 	using handle_type = std::coroutine_handle<promise_type>;
