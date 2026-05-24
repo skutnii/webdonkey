@@ -231,7 +231,7 @@ public:
 	bool await_ready() {
 		std::lock_guard<std::recursive_mutex> access_lock(
 			_state->_access_mutex);
-		return _state->_ready || _state->_exception;
+		return _state->_value.has_value() || _state->_exception;
 	}
 
 	template <typename caller_promise>
@@ -257,8 +257,9 @@ public:
 			std::rethrow_exception(ex);
 		}
 
-		_state->_ready = false;
-		return _state->_value;
+		
+		defer reset_value{[this]() { _state->_value.reset(); }};
+		return _state->_value.value();
 	}
 
 	template <typename functor> void on_suspend(functor suspend) {
@@ -293,8 +294,7 @@ private:
 	}
 
 	struct state {
-		bool _ready = false;
-		value_type _value;
+		std::optional<value_type> _value;
 		std::exception_ptr _exception;
 		std::function<void()> _resume;
 		std::function<void()> _suspend;
