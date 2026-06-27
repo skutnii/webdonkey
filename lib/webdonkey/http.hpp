@@ -177,6 +177,7 @@ inline static coroutine::yielding<expected_request<tcp_stream>,
 http(tcp::socket socket) {
 	tcp_stream stream{std::move(socket)};
 	auto next_request = accept_requests(stream);
+	next_request.defer_cleanup();
 
 	while (auto request_or = co_await next_request)
 		co_yield request_or.value();
@@ -191,6 +192,7 @@ https(tcp::socket socket, ssl::context &ssl_ctx) {
 	defer shutdown{[&stream]() { stream.shutdown(); }};
 
 	auto next_request = accept_requests(stream);
+	next_request.defer_cleanup();
 
 	while (auto request_or = co_await next_request)
 		co_yield request_or.value();

@@ -84,6 +84,11 @@ public:
 	yielding(handle_type handle) :
 		_handle{handle} {}
 
+	~yielding() {
+		if (_should_cleanup)
+			_handle.destroy(); 
+	}
+
 	promise_type &promise() { return _handle.promise(); }
 
 	/**
@@ -102,7 +107,12 @@ public:
 		return promise()._yield;
 	}
 
+	void defer_cleanup() {
+		_should_cleanup = true;
+	}
+
 private:
+	bool _should_cleanup = false;
 	handle_type _handle;
 };
 
@@ -232,9 +242,9 @@ class combined {
 public:
 	using self = combined<yield_type, return_type, init_suspend, yield_flavor,
 						  return_flavor>;
-	using yield_continuation =
-		continuation<std::optional<yield_type>, yield_flavor>;
 	using yield_result_type = std::optional<yield_type>;
+	using yield_continuation =
+		continuation<yield_result_type, yield_flavor>;
 	using return_continuation = continuation<return_type, return_flavor>;
 
 	struct promise_type;
@@ -334,9 +344,19 @@ public:
 		promise()._expects_return = false;
 		return promise()._return;
 	}
+	
+	void defer_cleanup() {
+		_should_cleanup = true;
+	}
+	
+	~combined() {
+		if (_should_cleanup)
+			_handle.destroy();
+	}
 
 private:
 	handle_type _handle;
+	bool _should_cleanup = false;
 };
 
 } // namespace coroutine
