@@ -68,6 +68,7 @@ simple_server::serve(webdonkey::accept_result socket_or) {
 		}
 
 		auto next_request = http(std::move(socket_or.value()));
+		next_request.defer_cleanup();
 
 		// Possibly switch to a new thread
 		co_await coroutine::hop(*_executor);
