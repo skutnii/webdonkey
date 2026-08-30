@@ -28,6 +28,7 @@ using request_buffer = beast::multi_buffer;
 using request_parser = beast::http::request_parser<beast::http::buffer_body>;
 using request = request_parser::value_type;
 using response_ptr = std::shared_ptr<response_generator>;
+using io_result = std::expected<size_t, boost::system::error_code>;
 
 /**
  * HTTP request wrapper
@@ -84,8 +85,6 @@ public:
 	std::string method_string() const {
 		return beast::http::to_string(request().method());
 	}
-
-	using io_result = std::expected<size_t, boost::system::error_code>;
 
 	/**
 	 * Reads the request header
@@ -201,7 +200,7 @@ accept_requests(socket_stream &stream) {
 	for (;;) {
 		using context = request_context<socket_stream>;
 		context ctx{stream};
-		typename context::io_result status = co_await ctx.read_header();
+		io_result status = co_await ctx.read_header();
 		if (!status.has_value()) {
 			if ((status.error() != beast::http::error::end_of_stream) &&
 				(status.error() != beast::http::error::partial_message))
