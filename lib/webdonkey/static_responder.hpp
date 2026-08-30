@@ -19,6 +19,10 @@
 
 namespace webdonkey {
 
+/**
+ * Static responder implements plain old HTTP server functionality,
+ * serving files from its document root.
+ */
 class static_responder {
 public:
 	static_responder(const std::filesystem::path &root,
@@ -30,7 +34,7 @@ public:
 
 	template <class socket_stream>
 	expected_response operator()(request_context<socket_stream> &r_context,
-								 std::string_view target);
+								 std::string_view target) const;
 
 private:
 	std::filesystem::path _root;
@@ -38,10 +42,13 @@ private:
 	std::string _version;
 };
 
+/**
+ * Serve static content.
+ */
 template <class socket_stream>
 expected_response
 static_responder::operator()(request_context<socket_stream> &r_context,
-							 std::string_view target) {
+							 std::string_view target) const {
 	// Request path must be absolute and not contain "..".
 	if (target.find("..") != std::string_view::npos)
 		return std::unexpected{
@@ -88,7 +95,7 @@ static_responder::operator()(request_context<socket_stream> &r_context,
 		res.set(beast::http::field::content_type, mime_type(file_path));
 		res.content_length(size);
 		res.keep_alive(req.keep_alive());
-		return std::make_shared<response_generator>(std::move(res));
+		return response_generator{std::move(res)};
 	} else {
 		// Respond to GET request
 		beast::http::response<beast::http::file_body> res{
@@ -98,7 +105,7 @@ static_responder::operator()(request_context<socket_stream> &r_context,
 		res.set(beast::http::field::content_type, mime_type(file_path));
 		res.content_length(size);
 		res.keep_alive(req.keep_alive());
-		return std::make_shared<response_generator>(std::move(res));
+		return response_generator{std::move(res)};
 	}
 }
 

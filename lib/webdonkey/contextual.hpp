@@ -18,6 +18,8 @@
 
 namespace webdonkey {
 
+// Dependency injection 
+
 template <class context, typename instance_type> class managed_ptr;
 template <class context, typename instance_type> class shared_object;
 template <class context, typename instance_type> class shared_factory;
@@ -25,6 +27,11 @@ template <class context, typename instance_type> class shared_factory;
 template <class context, typename instance_type>
 using managed_getter = std::function<managed_ptr<context, instance_type>()>;
 
+/**
+ * A dependency injection registry.
+ * The context class is used only to distinguish different registries
+ * and can be empty.  
+ */
 template <class context> class shared_registry {
 public:
 	shared_registry(const shared_registry<context> &) = delete;
@@ -42,9 +49,17 @@ public:
 		return std::type_index{typeid(instance_type)};
 	}
 
+	/**
+	 * Registers an instance getter with a shared registry.
+	 */
 	template <typename instance_type>
 	void register_getter(const managed_getter<context, instance_type> &getter);
 
+	/**
+	 * Returns an instance of a type 
+	 * if the registry has a getter for it
+	 * or throws an missing_getter exception otherwise.
+	 */
 	template <typename instance_type>
 	managed_ptr<context, instance_type> instance();
 
@@ -55,6 +70,12 @@ private:
 	std::mutex _getters_mutex;
 };
 
+//==============================================================================
+
+/**
+ * A smart pointer to an object instance accessible or creatable 
+ * via a shared registry.
+ */
 template <class context, typename instance_type> class managed_ptr {
 public:
 	explicit managed_ptr(std::nullptr_t) {}
@@ -89,6 +110,10 @@ private:
 	instance_type *get_local() const { return _local.get(); }
 	instance_type *get_shared() const { return _shared.lock().get(); }
 
+	/**
+   * Request the instance from the associated registry
+	 * upon first access.
+	 */
 	instance_type *get_lazy() const;
 
 	instance_type *(managed_ptr<context, instance_type>::*_getter)() const =
@@ -97,6 +122,11 @@ private:
 	std::weak_ptr<instance_type> _shared;
 };
 
+//==============================================================================
+
+/**
+ * An object instance that is created once and shared among the users.
+ */
 template <class context, typename instance_type> class shared_object {
 public:
 	using instance_ptr = std::shared_ptr<instance_type>;
@@ -120,6 +150,12 @@ private:
 	std::shared_ptr<instance_type> _instance;
 };
 
+//==============================================================================
+
+/**
+ * A factory that is used to instantiate an object
+ * each time one is requested from a registry.
+ */
 template <class context, typename instance_type> class shared_factory {
 public:
 	using instance_ptr = std::shared_ptr<instance_type>;
@@ -139,6 +175,12 @@ private:
 	managed_getter<context, instance_type> _getter;
 };
 
+//==============================================================================
+
+/**
+ * An exception thrown by a registry upon an attempt 
+ * to register a getter for the same class more than once.
+ */
 class duplicate_getter : public std::runtime_error {
 public:
 	duplicate_getter() :
@@ -152,6 +194,12 @@ public:
 	virtual ~duplicate_getter() = default;
 };
 
+//==============================================================================
+
+/**
+ * An exception that is thrown when a shared registry
+ * has no object getter for an object type.
+ */
 class missing_getter : public std::runtime_error {
 public:
 	missing_getter() :
@@ -165,6 +213,11 @@ public:
 	virtual ~missing_getter() = default;
 };
 
+//==============================================================================
+
+/**
+ * An exception thrown by a managed_ptr when lazy instance resolution fails.
+ */
 class lazy_resolution_failure : public std::runtime_error {
 public:
 	lazy_resolution_failure() :
@@ -179,6 +232,8 @@ public:
 	virtual ~lazy_resolution_failure() = default;
 };
 
+//==============================================================================
+
 template <class context>
 template <typename instance_type>
 void shared_registry<context>::register_getter(
@@ -190,6 +245,8 @@ void shared_registry<context>::register_getter(
 	_getters[id] = getter;
 }
 
+//==============================================================================
+
 template <class context>
 template <typename instance_type>
 managed_ptr<context, instance_type> shared_registry<context>::instance() {
@@ -200,6 +257,8 @@ managed_ptr<context, instance_type> shared_registry<context>::instance() {
 	return (*std::any_cast<managed_getter<context, instance_type>>(
 		&_getters[id]))();
 }
+
+//==============================================================================
 
 template <class context, typename instance_type>
 instance_type *managed_ptr<context, instance_type>::get_lazy() const {

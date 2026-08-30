@@ -8,10 +8,17 @@
 #ifndef LIB_WEBDONKEY_HTTP_HPP_
 #define LIB_WEBDONKEY_HTTP_HPP_
 
+#include "webdonkey/continuation.hpp"
+#include "webdonkey/defs.hpp"
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/beast/http/message_fwd.hpp>
+#include <boost/system/detail/error_code.hpp>
+#include <coroutine>
 #include <expected>
+#include <functional>
 #include <regex>
+#include <webdonkey/coroutines.hpp>
 #include <webdonkey/utils.hpp>
 
 namespace webdonkey {
@@ -21,9 +28,15 @@ using request_buffer = beast::multi_buffer;
 using request_parser = beast::http::request_parser<beast::http::buffer_body>;
 using request = request_parser::value_type;
 using response_ptr = std::shared_ptr<response_generator>;
+using io_result = std::expected<size_t, boost::system::error_code>;
 
+/**
+ * HTTP request wrapper
+ */
 template <class socket_stream> class request_context {
 public:
+	using stream_ptr = std::shared_ptr<socket_stream>;
+
 	request_context(socket_stream &s) :
 		_stream{s} {};
 
@@ -36,43 +49,123 @@ public:
 	request_context<socket_stream> &
 	operator=(request_context<socket_stream> &&) = delete;
 
+	/**
+	 * I/O buffer accessor
+	 */
 	request_buffer &buffer() { return _buffer; }
 
+	/**
+	 * Request parser accessor
+	 */
 	request_parser &parser() { return _parser; }
 
+	/**
+	 * Underlying stream accessor
+	 */
 	socket_stream &stream() { return _stream; }
 
-	asio::awaitable<std::size_t> read_header() {
-		return beast::http::async_read_header(_stream, _buffer, _parser,
-											  asio::use_awaitable);
+	/**
+	 * Const request accessor
+	 */
+	const webdonkey::request &request() const { return _parser.get(); }
+
+	/**
+	 * Non-const request accessor
+	 */
+	webdonkey::request &request() { return _parser.get(); }
+
+	/**
+	 * Requested resource path
+	 */
+	std::string_view target() const { return _parser.get().base().target(); }
+
+	/**
+	 * Request HTTP method as a string
+	 */
+	std::string method_string() const {
+		return beast::http::to_string(request().method());
 	}
 
+	/**
+	 * Reads the request header
+	 */
+	coroutine::continuation<io_result, coroutine::continuation_flavor::copy>
+	read_header() {
+		using continuation =
+			coroutine::continuation<io_result,
+									coroutine::continuation_flavor::copy>;
+		continuation then;
+		beast::http::async_read_header(
+			_stream, _buffer, _parser,
+			[then](
+				boost::system::error_code const &error, // result of operation
+				std::size_t bytes_transferred) {
+				if (error)
+					const_cast<continuation &>(then)(std::unexpected{error});
+				else
+					const_cast<continuation &>(then)(bytes_transferred);
+			});
+		return then;
+	}
+
+	/**
+	 * Write a type-erased HTTP response.
+	 */
+	coroutine::continuation<io_result, coroutine::continuation_flavor::copy>
+	write(response_generator &gen) {
+		using continuation =
+			coroutine::continuation<io_result,
+									coroutine::continuation_flavor::copy>;
+		continuation then;
+		beast::async_write(
+			_stream, std::move(gen),
+			[then](
+				boost::system::error_code const &error, // result of operation
+				std::size_t bytes_transferred) {
+				if (error)
+					const_cast<continuation &>(then)(std::unexpected{error});
+				else
+					const_cast<continuation &>(then)(bytes_transferred);
+			});
+		return then;
+	}
+
+	/**
+	 * Write a typed response
+	 */
 	template <class body>
-	asio::awaitable<std::size_t> write(beast::http::response<body> &response) {
-		return beast::http::async_write(_stream, response, asio::use_awaitable);
+	coroutine::continuation<io_result, coroutine::continuation_flavor::copy>
+	write(beast::http::response<body> &res) {
+		using continuation =
+			coroutine::continuation<io_result,
+									coroutine::continuation_flavor::copy>;
+		continuation then;
+		beast::http::async_write(
+			_stream, res,
+			[then](
+				boost::system::error_code const &error, // result of operation
+				std::size_t bytes_transferred) {
+				if (error)
+					const_cast<continuation &>(then)(std::unexpected{error});
+				else
+					const_cast<continuation &>(then)(bytes_transferred);
+			});
+		return then;
 	}
 
-	awaitable<std::size_t> write(response_generator &gen) {
-		return beast::async_write(_stream, std::move(gen), asio::use_awaitable);
-	}
-
+	/**
+	 * Force override the keep-alive value defined by the request.
+	 */
 	void force_keep_alive(bool flag) { _force_keep_alive = flag; }
 
+	/**
+	 * Effective keep-alive flag
+	 */
 	bool keep_alive() const {
 		if (_force_keep_alive.has_value())
 			return _force_keep_alive.value();
 
 		return _parser.get().keep_alive();
-	}
-
-	const webdonkey::request &request() const { return _parser.get(); }
-
-	webdonkey::request &request() { return _parser.get(); }
-
-	std::string_view target() const { return _parser.get().base().target(); }
-
-	std::string method_string() const {
-		return beast::http::to_string(request().method());
 	}
 
 private:
@@ -82,50 +175,87 @@ private:
 	request_parser _parser;
 };
 
-template <typename responder_type, class socket_stream>
-awaitable<void> serve(socket_stream &stream, responder_type respond) {
-	request_context<socket_stream> ctx{std::forward<decltype(stream)>(stream)};
+//==============================================================================
+
+using http_context = request_context<tcp_stream>;
+using https_context = request_context<ssl_stream>;
+
+template <class socket_stream>
+using context_wrapper = std::reference_wrapper<request_context<socket_stream>>;
+
+template <class socket_stream>
+using expected_request = std::expected<context_wrapper<socket_stream>,
+									   boost::system::error_code>;
+
+//==============================================================================
+
+/**
+ * Accept requests from a socket stream
+ */
+template <class socket_stream>
+coroutine::yielding<expected_request<socket_stream>, 
+										std::suspend_always, 
+										coroutine::continuation_flavor::copy>
+accept_requests(socket_stream &stream) {
 	for (;;) {
-		try {
-			request_context<socket_stream> ctx{
-				std::forward<decltype(stream)>(stream)};
-			co_await ctx.read_header();
-			response_ptr response = co_await respond(ctx);
+		using context = request_context<socket_stream>;
+		context ctx{stream};
+		io_result status = co_await ctx.read_header();
+		if (!status.has_value()) {
+			if ((status.error() != beast::http::error::end_of_stream) &&
+				(status.error() != beast::http::error::partial_message))
+				co_yield std::unexpected{status.error()};
 
-			/*
-			 * Implementations may choose to write responses to the stream
-			 * directly instead of returning them.
-			 */
-			if (response)
-				co_await ctx.write(*response);
-
-			if (!ctx.keep_alive())
-				break;
-		} catch (boost::system::system_error &err) {
-			// Client hangup
-			if (err.code() == beast::http::error::end_of_stream)
-				break;
-			else
-				throw;
+			break;
 		}
+
+		co_yield std::ref(ctx);
+
+		if (!ctx.keep_alive())
+			break;
 	}
 }
 
-template <typename server_type>
-awaitable<void> http(tcp::socket &socket, server_type server) {
+//==============================================================================
+
+/**
+ * HTTP over a TCP socket.
+ */
+inline static coroutine::yielding<expected_request<tcp_stream>,
+								  std::suspend_always, 
+									coroutine::continuation_flavor::copy>
+http(tcp::socket socket) {
 	tcp_stream stream{std::move(socket)};
-	co_await serve(stream, server);
+	auto next_request = accept_requests(stream);
+
+	while (auto request_or = co_await next_request)
+		co_yield request_or.value();
 }
 
-template <typename server_type>
-awaitable<void> https(tcp::socket &socket, ssl::context &ssl_ctx,
-					  server_type server) {
+//==============================================================================
+
+/**
+ * HTTPS over a TCP socket.
+ */
+inline static coroutine::yielding<expected_request<ssl_stream>,
+								  								std::suspend_always, 
+																	coroutine::continuation_flavor::copy>
+https(tcp::socket socket, ssl::context &ssl_ctx) {
 	ssl_stream stream{std::move(socket), ssl_ctx};
 	stream.handshake(ssl::stream_base::server);
-	co_await serve(stream, server);
-	stream.shutdown();
+	defer shutdown{[&stream]() { stream.shutdown(); }};
+
+	auto next_request = accept_requests(stream);
+
+	while (auto request_or = co_await next_request)
+		co_yield request_or.value();
 }
 
+//==============================================================================
+
+/**
+ * HTTP protocol error
+ */
 struct protocol_error {
 	beast::http::status status;
 	std::string message;
@@ -137,7 +267,11 @@ struct protocol_error {
 	bool recoverable = true;
 };
 
-using expected_response = std::expected<response_ptr, protocol_error>;
+//==============================================================================
+
+using expected_response = std::expected<response_generator, protocol_error>;
+
+//==============================================================================
 
 template <typename server_type, class socket_stream>
 concept responder = requires {
