@@ -27,6 +27,10 @@ namespace webdonkey {
 
 using accept_result = std::expected<tcp::socket, boost::system::error_code>;
 
+/**
+ * TCP socket listener that runs on an ASIO executor.
+ * Note that the executor is injected through the context (see examples).
+ */
 template <class context, class executor> class tcp_listener {
 public:
 	void stop() { _state->stopped = true; }

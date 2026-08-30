@@ -19,6 +19,10 @@
 
 namespace webdonkey {
 
+/**
+ * Static responder implements plain old HTTP server functionality,
+ * serving files from its document root.
+ */
 class static_responder {
 public:
 	static_responder(const std::filesystem::path &root,
@@ -38,6 +42,9 @@ private:
 	std::string _version;
 };
 
+/**
+ * Serve static content.
+ */
 template <class socket_stream>
 expected_response
 static_responder::operator()(request_context<socket_stream> &r_context,

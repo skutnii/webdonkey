@@ -22,11 +22,14 @@ namespace webdonkey {
 
 namespace coroutine {
 
+
 template <class suspend_type>
 concept suspend = requires {
 	std::is_same_v<suspend_type, std::suspend_always> ||
 		std::is_same_v<suspend_type, std::suspend_never>;
 };
+
+//==============================================================================
 
 /**
  * A coroutine that `co_yield`s a sequence of values
@@ -82,14 +85,17 @@ public:
 	};
 
 	yielding(handle_type handle) :
-		_handle{handle} {}
-
+		_handle{std::make_unique<handle_type>(handle)} {}
+		
+	yielding(const self&) = delete;
+	yielding(self&&) = default;
+	
 	~yielding() {
-		if (_should_cleanup)
-			_handle.destroy(); 
+		if (_handle)
+			_handle->destroy();
 	}
 
-	promise_type &promise() { return _handle.promise(); }
+	promise_type &promise() { return _handle->promise(); }
 
 	/**
 	 * The return continuation's value type is std::optional<yield_type>.
@@ -101,20 +107,17 @@ public:
 		// Check if returned.
 		if (!promise()._returned) {
 			state_lock.unlock();
-			_handle.resume();
+			_handle->resume();
 		}
 
 		return promise()._yield;
 	}
 
-	void defer_cleanup() {
-		_should_cleanup = true;
-	}
-
 private:
-	bool _should_cleanup = false;
-	handle_type _handle;
+	std::unique_ptr<handle_type> _handle;
 };
+
+//==============================================================================
 
 /**
  * A coroutine that returns a value with co_return but does not use co_yield.
@@ -171,6 +174,8 @@ public:
 private:
 	handle_type _handle;
 };
+
+//==============================================================================
 
 /**
  * A void-returning coroutine..
@@ -229,6 +234,8 @@ public:
 			"Unhandled yield while waiting for return from a coroutine."} {}
 	virtual ~unhandled_yield() = default;
 };
+
+//==============================================================================
 
 /**
  * A coroutine that can both yield and return.
@@ -310,9 +317,17 @@ public:
 	};
 
 	combined(handle_type handle) :
-		_handle{handle} {}
+		_handle{std::make_unique<promise_type>(handle)} {}
+		
+	combined(const self&) = delete;
+	combined(self&&) = default;
+	
+	~combined() {
+		if (_handle)
+			_handle->destroy();
+	}
 
-	promise_type &promise() { return _handle.promise(); }
+	promise_type &promise() { return _handle->promise(); }
 
 	yield_continuation &yield() {
 		std::unique_lock<std::recursive_mutex> state_lock{promise().mutex};
@@ -322,7 +337,7 @@ public:
 		if (!promise()._return.await_ready()) {
 			promise()._expects_yield = true;
 			state_lock.unlock();
-			_handle.resume();
+			_handle->resume();
 			state_lock.lock();
 		}
 
@@ -338,25 +353,15 @@ public:
 		promise()._expects_return = true;
 		state_lock.unlock();
 
-		_handle.resume();
+		_handle->resume();
 
 		state_lock.lock();
 		promise()._expects_return = false;
 		return promise()._return;
 	}
 	
-	void defer_cleanup() {
-		_should_cleanup = true;
-	}
-	
-	~combined() {
-		if (_should_cleanup)
-			_handle.destroy();
-	}
-
 private:
-	handle_type _handle;
-	bool _should_cleanup = false;
+	std::unique_ptr<handle_type> _handle;
 };
 
 } // namespace coroutine

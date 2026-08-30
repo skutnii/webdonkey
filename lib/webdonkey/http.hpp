@@ -29,6 +29,9 @@ using request_parser = beast::http::request_parser<beast::http::buffer_body>;
 using request = request_parser::value_type;
 using response_ptr = std::shared_ptr<response_generator>;
 
+/**
+ * HTTP request wrapper
+ */
 template <class socket_stream> class request_context {
 public:
 	using stream_ptr = std::shared_ptr<socket_stream>;
@@ -45,14 +48,48 @@ public:
 	request_context<socket_stream> &
 	operator=(request_context<socket_stream> &&) = delete;
 
+	/**
+	 * I/O buffer accessor
+	 */
 	request_buffer &buffer() { return _buffer; }
 
+	/**
+	 * Request parser accessor
+	 */
 	request_parser &parser() { return _parser; }
 
+	/**
+	 * Underlying stream accessor
+	 */
 	socket_stream &stream() { return _stream; }
+
+	/**
+	 * Const request accessor
+	 */
+	const webdonkey::request &request() const { return _parser.get(); }
+
+	/**
+	 * Non-const request accessor
+	 */
+	webdonkey::request &request() { return _parser.get(); }
+
+	/**
+	 * Requested resource path
+	 */
+	std::string_view target() const { return _parser.get().base().target(); }
+
+	/**
+	 * Request HTTP method as a string
+	 */
+	std::string method_string() const {
+		return beast::http::to_string(request().method());
+	}
 
 	using io_result = std::expected<size_t, boost::system::error_code>;
 
+	/**
+	 * Reads the request header
+	 */
 	coroutine::continuation<io_result, coroutine::continuation_flavor::copy>
 	read_header() {
 		using continuation =
@@ -72,6 +109,9 @@ public:
 		return then;
 	}
 
+	/**
+	 * Write a type-erased HTTP response.
+	 */
 	coroutine::continuation<io_result, coroutine::continuation_flavor::copy>
 	write(response_generator &gen) {
 		using continuation =
@@ -91,6 +131,9 @@ public:
 		return then;
 	}
 
+	/**
+	 * Write a typed response
+	 */
 	template <class body>
 	coroutine::continuation<io_result, coroutine::continuation_flavor::copy>
 	write(beast::http::response<body> &res) {
@@ -111,23 +154,19 @@ public:
 		return then;
 	}
 
+	/**
+	 * Force override the keep-alive value defined by the request.
+	 */
 	void force_keep_alive(bool flag) { _force_keep_alive = flag; }
 
+	/**
+	 * Effective keep-alive flag
+	 */
 	bool keep_alive() const {
 		if (_force_keep_alive.has_value())
 			return _force_keep_alive.value();
 
 		return _parser.get().keep_alive();
-	}
-
-	const webdonkey::request &request() const { return _parser.get(); }
-
-	webdonkey::request &request() { return _parser.get(); }
-
-	std::string_view target() const { return _parser.get().base().target(); }
-
-	std::string method_string() const {
-		return beast::http::to_string(request().method());
 	}
 
 private:
@@ -136,6 +175,8 @@ private:
 	request_buffer _buffer;
 	request_parser _parser;
 };
+
+//==============================================================================
 
 using http_context = request_context<tcp_stream>;
 using https_context = request_context<ssl_stream>;
@@ -147,6 +188,11 @@ template <class socket_stream>
 using expected_request = std::expected<context_wrapper<socket_stream>,
 									   boost::system::error_code>;
 
+//==============================================================================
+
+/**
+ * Accept requests from a socket stream
+ */
 template <class socket_stream>
 coroutine::yielding<expected_request<socket_stream>, 
 										std::suspend_always, 
@@ -171,18 +217,27 @@ accept_requests(socket_stream &stream) {
 	}
 }
 
+//==============================================================================
+
+/**
+ * HTTP over a TCP socket.
+ */
 inline static coroutine::yielding<expected_request<tcp_stream>,
 								  std::suspend_always, 
 									coroutine::continuation_flavor::copy>
 http(tcp::socket socket) {
 	tcp_stream stream{std::move(socket)};
 	auto next_request = accept_requests(stream);
-	next_request.defer_cleanup();
 
 	while (auto request_or = co_await next_request)
 		co_yield request_or.value();
 }
 
+//==============================================================================
+
+/**
+ * HTTPS over a TCP socket.
+ */
 inline static coroutine::yielding<expected_request<ssl_stream>,
 								  								std::suspend_always, 
 																	coroutine::continuation_flavor::copy>
@@ -192,12 +247,16 @@ https(tcp::socket socket, ssl::context &ssl_ctx) {
 	defer shutdown{[&stream]() { stream.shutdown(); }};
 
 	auto next_request = accept_requests(stream);
-	next_request.defer_cleanup();
 
 	while (auto request_or = co_await next_request)
 		co_yield request_or.value();
 }
 
+//==============================================================================
+
+/**
+ * HTTP protocol error
+ */
 struct protocol_error {
 	beast::http::status status;
 	std::string message;
@@ -209,7 +268,11 @@ struct protocol_error {
 	bool recoverable = true;
 };
 
+//==============================================================================
+
 using expected_response = std::expected<response_generator, protocol_error>;
+
+//==============================================================================
 
 template <typename server_type, class socket_stream>
 concept responder = requires {

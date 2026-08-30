@@ -21,130 +21,58 @@ namespace webdonkey {
 
 namespace coroutine {
 
+/**
+ * Continuation flavor defines value passing strategy of a continuation
+ */
 enum class continuation_flavor { reference, move, copy, blocking };
 
+//==============================================================================
+
+/**
+ * By default, continuation passes a reference.
+ * Suitable for passing objects whose lifetime is managed elsewhere.
+ */
 template <typename value_type>
 inline static constexpr continuation_flavor continuation_storage_type() {
 	return continuation_flavor::reference;
 }
 
+//==============================================================================
+
+/**
+ * Ints are copied by default.
+ */
 template <>
 inline constexpr continuation_flavor continuation_storage_type<int>() {
 	return continuation_flavor::copy;
 }
 
+//==============================================================================
+
+/**
+ * booleans are copied by default.
+ */
 template <>
 inline constexpr continuation_flavor continuation_storage_type<bool>() {
 	return continuation_flavor::copy;
 }
 
+//==============================================================================
+
+/**
+ * Forward declaration of the continuation class.
+ * The primary use of a continuation is to allow
+ * coroutines to wait on callback-based asynchronous functions.
+ */
 template <typename value_type, continuation_flavor storage_strategy =
 								   continuation_storage_type<value_type>()>
 class continuation;
 
-template <typename value_type>
-class continuation<value_type, continuation_flavor::reference> {
-public:
-	bool await_ready() {
-		std::lock_guard<std::recursive_mutex> access_lock(
-			_state->_access_mutex);
-		return ((_state->_short_lived_value != nullptr) ||
-				_state->_long_lived_value || _state->_exception);
-	}
+//==============================================================================
 
-	template <typename caller_promise>
-	void await_suspend(std::coroutine_handle<caller_promise> h) {
-		std::lock_guard<std::recursive_mutex> access_lock(
-			_state->_access_mutex);
-		void *address = h.address();
-		_state->_resume = [address]() {
-			std::coroutine_handle<caller_promise>::from_address(address)
-				.resume();
-		};
-
-		if (_state->_suspend)
-			_state->_suspend();
-	}
-
-	value_type await_resume() {
-		std::lock_guard<std::recursive_mutex> access_lock(
-			_state->_access_mutex);
-		if (_state->_exception) {
-			std::exception_ptr ex;
-			std::swap(_state->_exception, ex);
-			std::rethrow_exception(ex);
-		}
-
-		if (_state->_short_lived_value) {
-			value_type *val = _state->_short_lived_value;
-			_state->_short_lived_value = nullptr;
-			return *val;
-		}
-
-		std::unique_ptr<value_type> tmp;
-		std::swap(tmp, _state->_long_lived_value);
-		return *tmp;
-	}
-
-	template <typename functor> void on_suspend(functor suspend) {
-		std::lock_guard<std::recursive_mutex> access_lock(
-			_state->_access_mutex);
-		_state->_suspend = suspend;
-	}
-
-	void operator()(const value_type &val) {
-		std::lock_guard<std::recursive_mutex> access_lock(
-			_state->_access_mutex);
-		if (_state->resumable()) {
-			_state->_short_lived_value = &val;
-			pop_resume();
-		} else {
-			_state->_long_lived_value =
-				std::make_unique<value_type>(std::move(val));
-		}
-	}
-
-	void operator()(value_type &&val) {
-		std::lock_guard<std::recursive_mutex> access_lock(
-			_state->_access_mutex);
-		if (_state->resumable()) {
-			_state->_short_lived_value = &val;
-			pop_resume();
-		} else {
-			_state->_long_lived_value =
-				std::make_unique<value_type>(std::forward<value_type>(val));
-		}
-	}
-
-	void operator()(std::exception_ptr exception) {
-		std::lock_guard<std::recursive_mutex> access_lock(
-			_state->_access_mutex);
-		_state->_exception = exception;
-		if (_state->resumable())
-			pop_resume();
-	}
-
-private:
-	void pop_resume() {
-		std::function<void()> resume = _state->_resume;
-		_state->_resume = nullptr;
-		resume();
-	}
-
-	struct state {
-		value_type *_short_lived_value = nullptr;
-		std::unique_ptr<value_type> _long_lived_value;
-		std::exception_ptr _exception;
-		std::function<void()> _resume;
-		std::function<void()> _suspend;
-		std::recursive_mutex _access_mutex;
-
-		bool resumable() const { return (_resume != nullptr); }
-	};
-
-	std::shared_ptr<state> _state{std::make_shared<state>()};
-};
-
+/**
+ * Moving continuation
+ */
 template <typename value_type>
 class continuation<value_type, continuation_flavor::move> {
 public:
@@ -178,7 +106,7 @@ public:
 		}
 		
 		defer reset_value{[this]() { _state->_value.reset(); }};
-		return value_type{std::move(_state->_value.value())};
+		return std::move(_state->_value.value());
 	}
 
 	template <typename functor> void on_suspend(functor suspend) {
@@ -225,6 +153,11 @@ private:
 	std::shared_ptr<state> _state{std::make_shared<state>()};
 };
 
+//==============================================================================
+
+/**
+ * Copying continuation.
+ */
 template <typename value_type>
 class continuation<value_type, continuation_flavor::copy> {
 public:
@@ -257,7 +190,6 @@ public:
 			std::rethrow_exception(ex);
 		}
 
-		
 		defer reset_value{[this]() { _state->_value.reset(); }};
 		return _state->_value.value();
 	}
@@ -306,6 +238,11 @@ private:
 	std::shared_ptr<state> _state{std::make_shared<state>()};
 };
 
+//==============================================================================
+
+/**
+ * void-returning continuation.
+ */
 template <> class continuation<void> {
 public:
 	bool await_ready() {
@@ -383,6 +320,11 @@ private:
 	std::shared_ptr<state> _state = std::make_shared<state>();
 };
 
+//==============================================================================
+
+/**
+ * A continuation that waits until there is a value consumer.
+ */
 template <typename value_type>
 class continuation<value_type, continuation_flavor::blocking> {
 public:
@@ -463,6 +405,11 @@ private:
 	std::shared_ptr<state> _state{std::make_shared<state>()};
 };
 
+//==============================================================================
+
+/**
+ * A void-returning blocking continuation.
+ */
 template <> class continuation<void, continuation_flavor::blocking> {
 public:
 	bool await_ready() { return false; }

@@ -15,6 +15,9 @@ namespace webdonkey {
 
 namespace coroutine {
 
+/**
+ * Hop to a new thread managed by the executor.
+ */
 template <class executor>
 continuation<void, continuation_flavor::blocking> hop(executor &exec) {
 	using continuation = continuation<void, continuation_flavor::blocking>;

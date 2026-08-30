@@ -15,6 +15,9 @@
 
 namespace webdonkey {
 
+/**
+ * Mime type by file extension.
+ */
 static std::string mime_type(const std::filesystem::path &file_path) {
 	using beast::iequals;
 	std::filesystem::path ext = file_path.extension();
@@ -63,6 +66,12 @@ static std::string mime_type(const std::filesystem::path &file_path) {
 	return "application/text";
 }
 
+//==============================================================================
+
+/**
+ * Return the portion starting portion of a string view that matches a regex
+ * or an empty string if there is no match.
+ */
 static std::string_view prefix_matching(std::string_view path,
 										const std::regex &regex) {
 	std::cmatch matches;
@@ -74,6 +83,11 @@ static std::string_view prefix_matching(std::string_view path,
 	return path.substr(0, matches[0].length());
 }
 
+//==============================================================================
+
+/**
+ * Performs a deferred action when it is destroyed.
+ */
 class defer {
 public:
 	template <typename functor>

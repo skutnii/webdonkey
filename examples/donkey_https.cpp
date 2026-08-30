@@ -166,7 +166,6 @@ secure_server::serve_content(webdonkey::accept_result socket_or) {
 		}
 
 		auto next_request = https(std::move(socket_or.value()), _ssl_ctx);
-		next_request.defer_cleanup();
 
 		coroutine::hop(*_executor);
 
@@ -222,7 +221,6 @@ secure_server::redirect(webdonkey::accept_result socket_or) {
 		}
 
 		auto next_request = http(std::move(socket_or.value()));
-		next_request.defer_cleanup();
 		coroutine::hop(*_executor);
 
 		while (auto request_or = co_await next_request) {
