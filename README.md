@@ -6,7 +6,7 @@ The name webdonkey was chosen because donkeys are small but helpful beasts of bu
 
 Currently implemented:
 - dependency injection (contextual.hpp);
-- general-purpose coroutines (continueation.hpp, coroutines.hpp);
+- general-purpose coroutines (continuation.hpp, coroutines.hpp);
 - basic static HTTP and HTTPS server functionality (tcp_listener.hpp, http.hpp, static_responder.hpp).
 
 Examples serve as tests and illustration.
